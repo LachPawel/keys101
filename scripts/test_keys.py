@@ -1122,7 +1122,7 @@ def test_voice_teacher_routes_requests_to_the_arm_and_the_pitch_check() -> None:
         assert arm.asked == [["mi"], ["mi"], ["sol"], ["la"]]
         facts = [e["content"] for e in sent if e["type"] == "session.commentary.append"]
         assert "cents flat. Tell them that, then: A little higher." in facts[1]
-        assert "Then tell them to try mi once more, and do better." in facts[1]
+        assert "Then pass on this one tip" in facts[1] and "Then have them try mi once more." in facts[1]
         assert facts[2].startswith("The user sang mi and was in tune. Tell them that, then: Well done.")
         assert "Then push them on to the next note, sol" in facts[2]
         assert facts[-1].startswith("The lesson is over: 3 of 3 notes in tune.")
