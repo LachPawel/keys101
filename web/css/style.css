@@ -167,8 +167,9 @@ body.live .now .target { font-size: 48px; }
 .now.ready { margin-inline: -20px; padding: 18px 20px 22px; border-radius: 12px; background: #f8ecd0; box-shadow: inset 0 0 0 2px #e2b768; }
 .now.ready .label { color: #a86a1d; font-size: 13px; font-weight: 700; }
 .now.ready .label::before { width: 9px; height: 9px; background: var(--warm); }
-.lane { position: absolute; left: 2%; right: 2%; bottom: 3%; height: 42%; z-index: 2; display: flex; flex-direction: column; gap: 10px; padding: 18px 24px 20px; border-radius: 18px; background: var(--paper); border: 1px solid var(--line); box-shadow: 0 18px 50px rgba(64, 70, 45, 0.14); transition: opacity 300ms; }
+.lane { position: absolute; left: 2%; right: 2%; bottom: 3%; height: 42%; z-index: 2; display: flex; flex-direction: column; gap: 10px; padding: 18px 24px 20px; border-radius: 18px; background: var(--paper); border: 1px solid var(--line); box-shadow: 0 18px 50px rgba(64, 70, 45, 0.14); transition: opacity 300ms, transform 300ms; }
 .lane[data-active="false"] { opacity: 0.75; }
+.lane[data-shown="false"] { opacity: 0; transform: translateY(14px); pointer-events: none; }
 .lane-head { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; padding-left: 58px; padding-right: 4px; }
 #lane-word { font-size: clamp(26px, 2.7vw, 46px); font-weight: 700; letter-spacing: -0.04em; line-height: 1.05; color: #4b5039; }
 #lane-word[data-mood="good"] { color: var(--accent); }
@@ -211,3 +212,19 @@ body.live .now.singing .countdown { margin-top: 16px; }
 body.live .stage-legend, body.live .hint { display: none; }
 body.live .stage canvas#stage { z-index: 0; }
 body.live .lane { z-index: 3; }
+
+/* John, the singing head (js/chimera.js): bottom left, half see-through over the pitch lane while he shows a
+   note, gone in your turn. Multiply lets the lane's rows show through; hidden, he is not composited at all. */
+.coach { position: absolute; left: 2%; bottom: 3%; width: min(38%, 560px); height: 42%; z-index: 4; border-radius: 18px; overflow: hidden; mix-blend-mode: multiply; opacity: 0.9; pointer-events: none; transition: opacity 600ms, transform 600ms, visibility 0s; }
+/* Band mode and the warm-up have no lane under him, and over the dark keyboard his lines would vanish:
+   a slight veil of the page colour behind him, fading out at the edges. No card. */
+.coach-veil { position: absolute; left: 2%; bottom: 3%; width: min(38%, 560px); height: 42%; z-index: 3; pointer-events: none; background: rgba(250, 247, 238, 0.8); -webkit-mask-image: radial-gradient(ellipse closest-side, #000 55%, transparent); mask-image: radial-gradient(ellipse closest-side, #000 55%, transparent); opacity: 0; transition: opacity 600ms; }
+.coach-veil[data-on="true"] { opacity: 1; }
+.coach[data-show="false"] { opacity: 0; visibility: hidden; transform: translateY(10px) scale(0.97); transition: opacity 600ms, transform 600ms, visibility 0s 600ms; }
+.coach iframe { width: 100%; height: 100%; border: 0; display: block; background: transparent; }
+@media (prefers-reduced-motion: reduce) { .coach { transition: none; } }
+
+/* Live mode, less is more: only what you need to follow the lesson. */
+body.live .tagline, body.live .stage-eyebrow, body.live .stage-status, body.live .log-card, body.live .ears-card, body.live .policy, body.live .scale, body.live .reading, body.live #lane-count, body.live #phase { display: none; }
+#live-john { border-color: var(--warm); color: var(--warm); }
+.chip[hidden] { display: none; }

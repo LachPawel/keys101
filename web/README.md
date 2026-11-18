@@ -25,12 +25,15 @@ Then open http://localhost:8765. It must be served, not opened as a file, becaus
 Served by `scripts/keys_ui.py` instead of a plain file server, the page shows the real rig instead of
 the buttons. `js/live.js` follows the events the rig streams:
 
-- The big words over the stage say whose turn it is: "The arm plays mi.", "Get ready to sing mi.",
-  "Sing mi now.", then the verdict.
+- The big words over the stage say whose turn it is: "The arm plays mi.", "John sings mi. Watch." (beginner mode), "Your turn: sing mi.",
+  then the verdict.
 - The 3D arm glides over the note the policy is asked to play and presses the key MIDI hears.
 - While you sing: the listening window counts down, and your pitch is drawn live against the note.
 - What the robot hears (its spectrogram camera), the tune with right and wrong notes, and what you and
   the teacher said.
+- John (experiment): for beginners a 3D singing head appears over the pitch lane after the arm and sings
+  the note on its name, then fades and the arm plays it again for your turn. Also a warm-up and band
+  mode. `?chimera=0` turns him off. See `chimera/README.md`.
 
 ```bash
 uv run --with-requirements scripts/requirements-keys.txt scripts/keys_ui.py --demo   # no rig needed

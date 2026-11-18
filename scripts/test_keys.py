@@ -10,6 +10,7 @@ import json
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import cut_chunks
 import key_sounds as ks
@@ -937,6 +938,107 @@ def test_listen_names_the_notes_of_a_riff_and_checks_a_sung_note() -> None:
     assert silent["cents"] is None and "did not hear" in silent["answer"]
 
 
+def test_a_note_counts_only_when_it_is_held_in_tune_for_a_second() -> None:
+    pytest.importorskip("swift_f0")
+    import keys_voice
+
+    rng = np.random.default_rng(1)
+    hz = kpj.midi_hz
+    silence = np.zeros(int(0.2 * RATE), dtype=np.float32)
+
+    def glide(low: float, high: float, seconds: float) -> np.ndarray:
+        """A voice sliding from one pitch to another, with the harmonics of a sung tone."""
+        t = np.arange(int(seconds * RATE)) / RATE
+        midi = low + (high - low) * t / seconds
+        phase = 2 * np.pi * np.cumsum(440.0 * 2 ** ((midi - 69) / 12)) / RATE
+        return (0.2 * sum(np.sin(k * phase) / k for k in range(1, 7))).astype(np.float32)
+
+    # Held on the note: well done, and it says for how long.
+    held, _ = keys_voice.judge_singing(kpj.sung_tone(hz(52), rng), "mi")  # mi, an octave down
+    assert held["ok"] and held["answer"] == "Well done." and held["held"] >= keys_voice.HOLD_NEED_S
+    # Sliding from three semitones under to three over crosses mi: the average is "in tune", the singing was not.
+    crossed, _ = keys_voice.judge_singing(np.concatenate([silence, glide(49, 55, 2.0), silence]), "mi")
+    assert abs(crossed["cents"]) <= kc.IN_TUNE_CENTS and not crossed["ok"]
+    assert crossed["answer"] == "Hold it longer." and 0.1 < crossed["held"] < 0.6 and crossed["off_s"] > 1.0
+    # Too short on the note, then away: not held either.
+    brief = np.concatenate([silence, kpj.sung_tone(hz(52), rng, seconds=0.5), kpj.sung_tone(hz(49), rng, seconds=1.2)])
+    assert not keys_voice.judge_singing(brief, "mi")[0]["ok"]
+    # Found the note after a short wrong start and held it: that counts.
+    found = np.concatenate([silence, kpj.sung_tone(hz(49), rng, seconds=0.5), kpj.sung_tone(hz(52), rng, seconds=1.6)])
+    result, _ = keys_voice.judge_singing(found, "mi")
+    assert result["ok"] and abs(result["cents"]) <= kc.IN_TUNE_CENTS
+    # Off most of the time, on it for a second at the end: the hold never rescues a wrong note.
+    late = np.concatenate([silence, kpj.sung_tone(hz(49), rng, seconds=2.5), kpj.sung_tone(hz(52), rng, seconds=1.2)])
+    result, _ = keys_voice.judge_singing(late, "mi")
+    assert not result["ok"] and result["answer"] == "A little higher." and result["off_s"] > 2.0
+    # Never on it: the old verdict, and nothing was held.
+    flat, _ = keys_voice.judge_singing(kpj.sung_tone(hz(51.3), rng), "mi")
+    assert not flat["ok"] and flat["answer"] == "A little higher." and flat["held"] < 0.15
+
+
+def test_the_arm_restarts_its_policy_when_it_dies_and_gives_up_cleanly(monkeypatch: pytest.MonkeyPatch) -> None:
+    import keys_voice
+
+    monkeypatch.setattr(keys_voice.keys_play, "HOLD_S", 0.0)
+    monkeypatch.setattr(keys_voice.time, "sleep", lambda _s: None)
+
+    class Midi:
+        def __init__(self) -> None:
+            self.events: list[tuple[float, int, int]] = []
+
+    class Stdin:
+        def __init__(self, proc: "Proc") -> None:
+            self.proc = proc
+
+        def write(self, line: str) -> None:
+            self.proc.lines.append(line.strip())
+            if line.startswith("/subtask") and self.proc.plays:  # this session presses the key, and lets go
+                midi_of = {"do": 60, "re": 62, "mi": 64, "fa": 65, "sol": 67, "la": 69}
+                note = midi_of[next(n for n in midi_of if f"play {n}," in line)]
+                self.proc.midi.events += [(float(len(self.proc.midi.events)), note, 90), (0.0, note, 0)]
+
+        def flush(self) -> None:
+            pass
+
+    class Proc:
+        def __init__(self, midi: Midi, plays: bool, dead: bool = False) -> None:
+            self.midi, self.plays, self.dead, self.lines = midi, plays, dead, []
+            self.stdin = Stdin(self)
+
+        def poll(self) -> int | None:
+            return 1 if self.dead else None
+
+        def kill(self) -> None:
+            self.dead = True
+
+        def wait(self, timeout: float = 0.0) -> int:
+            return 1
+
+    def hands_with(processes: list[Proc]) -> tuple[Any, list[Proc]]:
+        hands = object.__new__(keys_voice.PolicyHands)
+        hands.lift_deg, hands.label, hands.first, hands.midi = 4.0, "test", False, processes[0].midi
+        spawned: list[Proc] = []
+
+        def spawn() -> Proc:
+            spawned.append(processes[len(spawned) + 1])
+            return spawned[-1]
+
+        hands.spawn, hands.process = spawn, processes[0]
+        return hands, spawned
+
+    # The session died since the last note (a fault of the policy's engine): a new one is started, the note played.
+    midi = Midi()
+    hands, spawned = hands_with([Proc(midi, plays=False, dead=True), Proc(midi, plays=True)])
+    assert hands.play(["mi", "sol"]) == [("mi", "E4"), ("sol", "G4")]
+    assert len(spawned) == 1 and spawned[0].lines[:2] == ["/subtask play mi, the third key", "/start"]
+    # It keeps dying: after two fresh starts the request ends with a clear error, not a broken pipe.
+    midi = Midi()
+    hands, spawned = hands_with([Proc(midi, False, dead=True) for _ in range(4)])
+    with pytest.raises(keys_voice.ArmDown):
+        hands.play(["mi"])
+    assert len(spawned) == keys_voice.ARM_RESTARTS
+
+
 def test_voice_teacher_routes_requests_to_the_arm_and_the_pitch_check() -> None:
     pytest.importorskip("swift_f0")
     import asyncio
@@ -986,6 +1088,8 @@ def test_voice_teacher_routes_requests_to_the_arm_and_the_pitch_check() -> None:
 
         audio, arm = FakeAudio(), FakeArm()
         teacher = keys_voice.Teacher(send, arm, audio, listen_s=0.0, rounds=1)
+        assert not teacher.warmed
+        teacher.warmed = True  # as after the warm-up: a bare "yes" below means the lesson
 
         async def user_says(text: str) -> None:
             await teacher.on_event({"type": "session.input_transcript.delta", "delta": text})
@@ -1053,6 +1157,65 @@ def test_voice_teacher_routes_requests_to_the_arm_and_the_pitch_check() -> None:
         facts = [e["content"] for e in sent if e["type"] == "session.commentary.append"]
         assert facts[1] == "The user sang la and was in tune. Tell them that, then: Well done."
 
+        # Beginner mode: the arm plays, John sings it on the display, then the arm plays it again: your turn.
+        await teacher.on_event({"type": "session.output_transcript.delta", "delta": "Ok."})
+        arm.asked, sent[:], teacher.show_s = [], [], 0.01
+        audio.sung = [kpj.sung_tone(hz(52), rng)]  # mi, an octave down
+        await user_says("check my pitch on mi")
+        teacher.show_s = 0.0
+        assert arm.asked == [["mi"], ["mi"]]
+        facts = [e["content"] for e in sent if e["type"] == "session.commentary.append"]
+        assert "John, the singing head on the screen" in facts[0]
+        assert facts[1] == 'Say exactly these three words and nothing else: "Now your turn."'  # before the arm's repeat
+        assert facts[2] == "The user sang mi and was in tune. Tell them that, then: Well done."
+
+        # The warm-up: up and down the six notes, nothing recorded. A level said out loud sets John.
+        await teacher.on_event({"type": "session.output_transcript.delta", "delta": "Ok."})
+        arm.asked, sent[:], audio.sung = [], [], []
+        await user_says("I'm a beginner, let's warm up")
+        assert arm.asked == [keys_voice.WARMUP_NOTES] and teacher.show_s == keys_voice.JOHN_S
+        await teacher.on_event({"type": "session.output_transcript.delta", "delta": "Ok."})
+        await user_says("I have sung before, warm up again")
+        assert teacher.show_s == 0.0
+
+        # Before any warm-up or lesson, a bare "ready" to the teacher's offer is the warm-up, then the lesson.
+        await teacher.on_event({"type": "session.output_transcript.delta", "delta": "Ok."})
+        arm.asked, sent[:], teacher.warmed, teacher.offered = [], [], False, True
+        await user_says("Ready!")
+        assert arm.asked == [keys_voice.WARMUP_NOTES] and teacher.warmed and teacher.offered
+
+        # The arm is down for good: the teacher says so and stays in the conversation. Nothing hangs.
+        await teacher.on_event({"type": "session.output_transcript.delta", "delta": "Ok."})
+        real_play, sent[:] = arm.play, []
+
+        def broken(notes: list[str], on_sound: object = None) -> list[tuple[str, str | None]]:
+            raise keys_voice.ArmDown("the arm's policy stopped 3 times in one request")
+
+        arm.play = broken
+        await user_says("play mi sol la")
+        arm.play = real_play
+        facts = [e["content"] for e in sent if e["type"] == "session.commentary.append"]
+        assert "The robot arm has stopped working" in facts[-1] and not teacher.busy
+        assert sent[-1]["type"] == "session.input_audio.unmute"
+
+        # A key that never sounds is not a turn: nothing is recorded, and it is not held against the user.
+        await teacher.on_event({"type": "session.output_transcript.delta", "delta": "Ok."})
+        sent[:], audio.sung = [], []
+        arm.play = lambda notes, on_sound=None: [(n, None) for n in notes]
+        await user_says("check my pitch on mi")
+        arm.play = real_play
+        facts = [e["content"] for e in sent if e["type"] == "session.commentary.append"]
+        assert facts[-1].startswith("The arm did not manage to play mi, so nothing was checked.")
+
+        # Band mode: the arm loops the riff's first line; nothing is recorded or judged.
+        await teacher.on_event({"type": "session.output_transcript.delta", "delta": "Ok."})
+        arm.asked, sent[:], audio.sung = [], [], []
+        await user_says("band mode, I have my guitar")
+        riff = keys_voice.keys_play.song_notes("stomp", 1)
+        assert arm.asked == [riff * keys_voice.BAND_LOOPS]
+        facts = [e["content"] for e in sent if e["type"] == "session.commentary.append"]
+        assert facts[0].startswith("Band mode.") and facts[-1].startswith("The jam is over.")
+
         await teacher.on_event({"type": "session.output_audio.delta", "delta": keys_voice.to_pcm(np.ones(4))})
         assert audio.said[-1] == pytest.approx(np.ones(4), abs=1e-3)
         await teacher.on_event({"type": "session.output_transcript.delta", "delta": "Bye."})
@@ -1068,6 +1231,16 @@ def test_voice_teacher_routes_requests_to_the_arm_and_the_pitch_check() -> None:
     assert understand("Just play some um, some anything").song == "largo"
     assert understand("play something by Beethoven").song == "ode"
     assert understand("jingle bells please").song == "jingle"
+    # The warm-up, and what the user says about their level.
+    assert understand("let's warm up first").kind == "warmup"
+    assert keys_voice.said_level("It's my first time, I'm a beginner") == "beginner"
+    assert keys_voice.said_level("I have sung before, skip John") == "direct"
+    assert keys_voice.said_level("play mi sol la") is None
+    # Band mode: a jam over a riff, the default one or a named tune.
+    assert (understand("let's do band mode").kind, understand("let's do band mode").song) == ("band", "stomp")
+    assert understand("give me a backing track, I'll play guitar").kind == "band"
+    assert understand("jam on largo with me").song == "largo"
+    assert (understand("play stomp").kind, understand("play stomp").song) == ("song", "stomp")
     assert understand("play mi sol la").keys == [3, 5, 6]
     assert (
         understand("can you check my pitch on sol").note == "sol" and understand("am I in tune").note == "mi"
@@ -1267,6 +1440,37 @@ def test_display_draws_the_sung_pitch_live_during_your_turn() -> None:
     assert turn["note"] == "mi" and turn["seconds"] == 6.0 and hub.state["phase"] == "your_turn"
     hub.event({"kind": "done"})
     assert hub.state["phase"] == "your_turn"
+
+    # Your turn opens as the arm starts the note: the arm's own events inside it do not end it.
+    turn_hub = keys_ui.Hub()
+    turn_hub.event({"kind": "your_turn", "note": "mi", "seconds": 9.0})
+    turn_hub.event({"kind": "tune", "notes": ["mi"], "policy": "p"})
+    turn_hub.event({"kind": "ask", "note": "mi", "index": 0})
+    assert (turn_hub.state["phase"], turn_hub.state["asked"], turn_hub.state["queue"]) == ("your_turn", "mi", ["mi"])
+    opened = turn_hub.state["turn"]["t"]
+    assert keys_ui.turn_open(turn_hub.state, opened + 1.0)
+    assert not keys_ui.turn_open(turn_hub.state, opened + 9.0 + keys_ui.TURN_GRACE_S + 0.1)
+    assert not keys_ui.turn_open({"phase": "listening", "turn": turn_hub.state["turn"]}, opened + 1.0)
+    # A teacher stopped mid-turn (Ctrl+C) must not leave "Your turn" up: the turn expires by itself.
+    turn_hub.expire(opened + 5.0)
+    assert turn_hub.state["phase"] == "your_turn"
+    turn_hub.expire(opened + 9.0 + keys_ui.TURN_GRACE_S + 0.1)
+    assert (turn_hub.state["phase"], turn_hub.state["asked"]) == ("idle", None)
+    # So does an arm, John or a verdict nobody followed up on; a waiting teacher ("listening") stays.
+    turn_hub.event({"kind": "phase", "name": "get_ready", "note": "mi"})
+    turn_hub.expire(turn_hub.last_event + keys_ui.STALE_S + 1)
+    assert turn_hub.state["phase"] == "idle"
+    turn_hub.event({"kind": "phase", "name": "listening"})
+    turn_hub.expire(turn_hub.last_event + keys_ui.STALE_S + 1)
+    assert turn_hub.state["phase"] == "listening"
+    # A beginner's note: John sings with the arm, so the arm's own events do not end "get_ready" either.
+    turn_hub.event({"kind": "phase", "name": "get_ready", "note": "sol"})
+    for arm_event in ({"kind": "tune", "notes": ["sol"]}, {"kind": "ask", "note": "sol", "index": 0}, {"kind": "done"}):
+        turn_hub.event(arm_event)
+    assert (turn_hub.state["phase"], turn_hub.state["asked"]) == ("get_ready", "sol")
+    # Band mode is a flag beside the phase.
+    turn_hub.event({"kind": "mode", "name": "band"})
+    assert turn_hub.state["mode"] == "band"
     hub.event({"kind": "sung", "note": "mi", "cents": -40.0, "answer": "Well done."})
     assert hub.state["phase"] == "feedback" and "ended" in hub.state["turn"]
     hub.event({"kind": "your_turn", "note": "sol"})
