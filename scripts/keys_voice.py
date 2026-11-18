@@ -714,17 +714,29 @@ def keep_clip(note: str, audio: NDArray[np.float32], result: dict[str, Any], kin
 HOLD_NEED_S = 1.0  # in tune this long in one go, or it does not count: gliding across a note is not singing it
 HOLD_GAP = 4  # frames (64 ms) of breath or wobble that do not break a held note
 FRAME_S = 0.016  # one pitch reading of SwiftF0
+# In tune is within this many cents, any octave. Stricter than the 50 the judge first allowed: on the 55
+# recordings of 18 November every note held on pitch still passes, and near misses get "higher" or "lower".
+JUDGE_CENTS = 40.0
+CENTRED_CENTS = 20.0  # a near miss closer than this is about holding the note; further, about the pitch
+SOLFEGE_OF = {0: "do", 2: "re", 4: "mi", 5: "fa", 7: "sol", 9: "la", 11: "ti"}
 
 
-def held_in_tune(audio: NDArray[np.float32], note: str) -> dict[str, float]:
-    """How the note was held: `held`, the longest stretch in tune in one go (s); `in_s` and `off_s`, the
-    time sung in tune and off it; `cents`, where that longest stretch sat. Any octave counts."""
+def note_word(midi: int) -> str:
+    """do, re, mi... for a MIDI note; the black keys as "do sharp" and so on."""
+    pc = midi % 12
+    return SOLFEGE_OF.get(pc) or f"{SOLFEGE_OF[pc - 1]} sharp"
+
+
+def sung_stats(audio: NDArray[np.float32], note: str, tol: float = JUDGE_CENTS) -> dict[str, Any]:
+    """What was sung against `note`, any octave: `voiced` (s of clear pitch), `cents` (the median), `held` (the
+    longest stretch in tune in one go, s), `in_s` and `off_s` (time in tune and off it), `sat_on` (the semitone
+    offset sung most) with its `share`, and `run` (where the longest in-tune stretch sat, cents)."""
     track = keys_listen.tracker().detect(np.ascontiguousarray(audio, dtype=np.float32), RATE)
     hz, voiced = np.asarray(track.pitch_hz, dtype=float), np.asarray(track.confidence) >= 0.5
     target = 440.0 * 2 ** ((keys_listen.MIDI[note] - 69) / 12)
     cents = np.full(hz.shape, np.nan)
     cents[voiced] = (1200 * np.log2(hz[voiced] / target) + 600) % 1200 - 600
-    good = voiced & (np.abs(np.nan_to_num(cents, nan=1e9)) <= kc.IN_TUNE_CENTS)
+    good = voiced & (np.abs(np.nan_to_num(cents, nan=1e9)) <= tol)
     best, start, last = (0, 0), -1, -1
     for i in np.flatnonzero(good):
         if start < 0 or i - last > HOLD_GAP + 1:
@@ -733,40 +745,76 @@ def held_in_tune(audio: NDArray[np.float32], note: str) -> dict[str, float]:
         if last + 1 - start > best[1] - best[0]:
             best = (start, last + 1)
     run = cents[best[0] : best[1]][good[best[0] : best[1]]]
+    sung = cents[voiced]
+    semis, counts = (np.unique(np.round(sung / 100).astype(int), return_counts=True) if sung.size else ([0], [0]))
+    top = int(np.argmax(counts))
     return {
+        "voiced": float(sung.size) * FRAME_S,
+        "cents": float(np.median(sung)) if sung.size else None,
         "held": (best[1] - best[0]) * FRAME_S,
         "in_s": float(np.count_nonzero(good)) * FRAME_S,
         "off_s": float(np.count_nonzero(voiced & ~good)) * FRAME_S,
-        "cents": float(np.median(run)) if run.size else 0.0,
+        "run": float(np.median(run)) if run.size else 0.0,
+        "sat_on": int(semis[top]),
+        "share": float(counts[top] / max(1, sung.size)),
+        "wobble": float(np.std(sung - np.median(sung))) if sung.size else None,
     }
+
+
+def held_in_tune(audio: NDArray[np.float32], note: str) -> dict[str, float]:
+    """How the note was held: `held`, the longest stretch in tune in one go (s); `in_s` and `off_s`, the
+    time sung in tune and off it; `cents`, where that longest stretch sat. Any octave counts."""
+    s = sung_stats(audio, note)
+    return {"held": s["held"], "in_s": s["in_s"], "off_s": s["off_s"], "cents": s["run"]}
 
 
 def judge_singing(
     audio: NDArray[np.float32], note: str, focus: VoiceFocus | None = None
 ) -> tuple[dict[str, Any], NDArray[np.float32]]:
-    """SwiftF0's verdict on a sung note, on the voice alone when Voice Focus is there: the microphone also
-    hears the piano and the teacher's voice. Too little clear voice is "not heard", not a wild number.
-    "Well done." takes the note held in tune for HOLD_NEED_S in one go: a voice that only crosses the note on
-    its way somewhere else has a fine average and did not sing it. The result says so in `ok` and `held`."""
+    """The verdict on a sung note, from the raw microphone.
+
+    Not from Voice Focus: on the recordings of 18 November it erased the singer in 9 of 55 turns ("I did not
+    hear you" after a held, in-tune note) and in others kept a few lucky in-tune moments of a note sung a
+    fourth too low ("Well done"). The window holds only the singer anyway: it starts after the piano has died
+    away, and John and the teacher are quiet in it. The Voice Focus copy is still returned, to keep beside it.
+
+    "Well done." takes the median within JUDGE_CENTS AND the note held in tune for HOLD_NEED_S in one go: a
+    voice that only crosses the note has not sung it. `sat_on` names the note sung instead, when it was one."""
     voice = focus.clip(audio) if focus is not None else audio
-    result = keys_listen.check_note(voice, keys_listen.MIDI[note], RATE)
-    if result["cents"] is not None and keys_listen.voiced_seconds(voice, RATE) < MIN_VOICED_S:
-        result = {
-            **result,
-            "hz": None,
-            "cents": None,
-            "answer": kc.judge_pitch(None, keys_listen.MIDI[note])[1],
-        }
-    if result["cents"] is None:
-        return {**result, "held": 0.0, "off_s": 0.0, "ok": False}, voice
-    # The hold only ever makes the verdict stricter: the note must be right on the voice alone, as before, AND
-    # held. For how long it was held, Voice Focus thins a sung note out and the raw microphone keeps it whole,
-    # so the better of the two counts; the raw one alone could mistake the piano's ringing for the singer.
-    hold = max((held_in_tune(clip, note) for clip in (voice, audio)), key=lambda h: h["held"])
-    ok = result["answer"] == "Well done." and hold["held"] >= HOLD_NEED_S
-    if result["answer"] == "Well done." and not ok:  # a fine average, never held
-        result = {**result, "answer": "Hold it longer."}
-    return {**result, "held": round(hold["held"], 2), "off_s": round(hold["off_s"], 2), "ok": ok}, voice
+    target = keys_listen.MIDI[note]
+    s = sung_stats(audio, note)
+    if s["cents"] is None or s["voiced"] < MIN_VOICED_S:
+        heard = {"hz": None, "cents": None, "wobble_cents": None, "answer": kc.judge_pitch(None, target)[1]}
+        return {**heard, "held": 0.0, "off_s": 0.0, "ok": False, "sat_on": None}, voice
+    cents = s["cents"]
+    if abs(cents) <= JUDGE_CENTS and s["held"] >= HOLD_NEED_S:
+        answer = "Well done."
+    elif abs(cents) < CENTRED_CENTS:  # centred on the note, never kept on it: the fix is the hold
+        answer = "Hold it longer."
+    else:  # off, or near the line and wobbling across it: the fix is the pitch
+        answer = "A little higher." if cents < 0 else "A little lower."
+    # the note they actually sang, when they settled on another one
+    # (a clear miss onto a note of the scale: 69 cents flat is a flat mi, not "really re sharp")
+    landed = (target + s["sat_on"]) % 12
+    other = (
+        SOLFEGE_OF[landed]
+        if s["sat_on"] != 0 and s["share"] >= 0.4 and abs(cents) >= 85 and landed in SOLFEGE_OF
+        else None
+    )
+    return {
+        "hz": round(target_hz(target) * 2 ** (cents / 1200), 2),
+        "cents": round(cents, 1),
+        "wobble_cents": round(s["wobble"], 1),
+        "answer": answer,
+        "held": round(s["held"], 2),
+        "off_s": round(s["off_s"], 2),
+        "ok": answer == "Well done.",
+        "sat_on": other,
+    }, voice
+
+
+def target_hz(midi: int) -> float:
+    return 440.0 * 2 ** ((midi - 69) / 12)
 
 
 class Teacher:
@@ -1028,7 +1076,7 @@ class Teacher:
             return f"The user sang {note} and was in tune.", result["answer"]
         side = "flat" if result["cents"] < 0 else "sharp"
         off = abs(round(result["cents"]))
-        if off <= kc.IN_TUNE_CENTS:  # on the note on average, but only in passing: say how briefly
+        if result["answer"] == "Hold it longer.":  # on the note on average, but only in passing: how briefly
             return (
                 f"The user only passed through {note}: in tune for {result['held']:.1f} seconds in one go, "
                 f"and off it for {result['off_s']:.1f} seconds. It takes one full second on the note. "
@@ -1036,6 +1084,8 @@ class Teacher:
                 "Hold it. One full second.",
             )
         fact = f"The user sang {note} and was {off} cents {side}."
+        if result.get("sat_on"):  # they settled on another note: name it, it is the most useful thing to hear
+            fact += f" They were really singing {result['sat_on']}, not {note}."
         if result["held"] >= 0.15:  # they did touch it: say how briefly, and how long they were off
             fact += f" They touched the note for {result['held']:.1f} seconds and were off it for {result['off_s']:.1f}."
         return fact, result["answer"]
@@ -1047,7 +1097,12 @@ class Teacher:
         if miss is None:
             return ""
         off = miss["cents"]
-        kind = "quiet" if off is None else "hold" if abs(off) <= kc.IN_TUNE_CENTS else "up" if off < 0 else "down"
+        kind = (
+            "quiet" if off is None
+            else "hold" if miss["answer"] == "Hold it longer."
+            else "up" if off < 0
+            else "down"
+        )
         self.tips += 1
         advice = TIPS[kind][self.tips % len(TIPS[kind])]
         watch = (
@@ -1060,7 +1115,7 @@ class Teacher:
     def slide(self) -> float | None:
         """For John, on a retry: how far off the last try was (cents), when it was off the note. Else None."""
         miss = self.missed
-        if miss is None or miss["cents"] is None or abs(miss["cents"]) <= kc.IN_TUNE_CENTS:
+        if miss is None or miss["cents"] is None or miss["answer"] == "Hold it longer.":
             return None
         return float(max(-400.0, min(400.0, miss["cents"])))
 

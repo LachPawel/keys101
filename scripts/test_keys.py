@@ -971,6 +971,11 @@ def test_a_note_counts_only_when_it_is_held_in_tune_for_a_second() -> None:
     late = np.concatenate([silence, kpj.sung_tone(hz(49), rng, seconds=2.5), kpj.sung_tone(hz(52), rng, seconds=1.2)])
     result, _ = keys_voice.judge_singing(late, "mi")
     assert not result["ok"] and result["answer"] == "A little higher." and result["off_s"] > 2.0
+    # Settled on another note of the scale: it is named. Do instead of mi, an octave down.
+    other, _ = keys_voice.judge_singing(kpj.sung_tone(hz(48), rng), "mi")
+    assert other["answer"] == "A little higher." and other["sat_on"] == "do"
+    # A near miss is just flat, not "another note".
+    assert keys_voice.judge_singing(kpj.sung_tone(hz(51.3), rng), "mi")[0]["sat_on"] is None
     # Never on it: the old verdict, and nothing was held.
     flat, _ = keys_voice.judge_singing(kpj.sung_tone(hz(51.3), rng), "mi")
     assert not flat["ok"] and flat["answer"] == "A little higher." and flat["held"] < 0.15
