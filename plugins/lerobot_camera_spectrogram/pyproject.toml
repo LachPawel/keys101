@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# Underscores matter: LeRobot's register_third_party_plugins() matches the distribution name against
+# "lerobot_camera_" and imports it as a module.
+name = "lerobot_camera_spectrogram"
+version = "0.1.0"
+description = "LeRobot camera plugin that turns a microphone into a mel spectrogram image"
+requires-python = ">=3.10"
+# lerobot itself is deliberately not listed: install this next to an existing LeRobot (e.g. LeLab's
+# environment) so it never pulls in or changes the lerobot version.
+dependencies = ["numpy", "sounddevice>=0.4"]
+
+[tool.setuptools]
+packages = ["lerobot_camera_spectrogram"]
