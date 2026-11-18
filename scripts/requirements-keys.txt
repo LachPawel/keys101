@@ -1,0 +1,17 @@
+# Extra packages for the keyboard scripts, layered on the project environment with
+#   uv run --with-requirements scripts/requirements-keys.txt scripts/<script>.py
+# Run from the repository root: the two plugin paths below are relative to it.
+
+# Both microphones (narration and room), and the `ears` spectrogram camera.
+sounddevice>=0.4
+# Speech to text with word timestamps on the Apple Silicon GPU (transcribe.py).
+mlx-whisper
+# The `ears` camera: a microphone rendered as a mel spectrogram image (camera type "spectrogram").
+./plugins/lerobot_camera_spectrogram
+# The USB MIDI keyboard's note-ons on the session clock (keys_scripted.py).
+mido
+python-rtmidi
+# The Reachy Mini camera only captures 1920x1080 at 60 fps: camera type "opencv_scaled" shrinks it.
+./plugins/lerobot_camera_scaled
+# A small neural pitch tracker: sung notes and guitar riffs to note names (keys_listen.py).
+swift-f0>=0.3

@@ -1,0 +1,73 @@
+# SO-101 Piano Teacher
+
+A cheap robot arm (SO-101) that presses the keys of a MIDI keyboard, hears the notes it plays, and gives
+basic singing lessons together with a Reachy Mini.
+
+It started as one question: today's robot policies learn from camera images and joint positions, so what
+changes if you also let one hear? Here the sound of the keyboard is drawn as a picture (a spectrogram) and
+fed to a stock [SmolVLA](https://huggingface.co/docs/lerobot/smolvla) policy as a second camera. No model
+change. The MIDI keyboard labels every recording and scores every press for free.
+
+This is a hobby experiment, built at home on one rig. Expect rough edges.
+
+## What is in here
+
+| Path | What it does |
+| --- | --- |
+| `scripts/keys_teleop.sh`, `keys_flow_record.py` | Record demonstrations with the leader arm, one key per episode, labelled by MIDI |
+| `scripts/keys_scripted.py` | The arm pressing keys from saved poses: recording, testing and the backup for demos |
+| `scripts/keys_flow_train.sh`, `keys_variants.py` | Build the training sets and start SmolVLA training on Hugging Face Jobs |
+| `scripts/keys_play.py` | Let a trained policy play a note or a tune, and score it from MIDI |
+| `scripts/keys_companion.py` | The teacher: play notes you name, teach a tune, run a singing warm-up |
+| `scripts/keys_listen.py` | SwiftF0 pitch tracking: is a sung note flat or sharp, and which notes are in a riff |
+| `scripts/keys_pitch_judge.py` | A test of whether Gemini Decision 1 can judge pitch (it cannot) |
+| `scripts/keys_synth.py` | A small software piano for the MIDI keyboard, with a clean audio feed for the "ears" |
+| `plugins/lerobot_camera_spectrogram` | LeRobot camera plugin: a microphone or audio cable as a spectrogram image |
+| `plugins/lerobot_camera_scaled` | LeRobot camera plugin: capture at one size, deliver a smaller one |
+| `scripts/test_keys.py` | Tests that need no hardware, microphone or API key |
+
+## Hardware
+
+- SO-101 follower and leader arms
+- A USB MIDI keyboard with stickers 1 to 6 on six neighbouring white keys: C D E F G A (do re mi fa sol la)
+- One camera that sees the keys and the arm (a Reachy Mini here)
+- A Mac. The scripts use Apple Silicon for speech to text and the `mps` device
+
+## Quick start
+
+```bash
+git clone https://github.com/LachPawel/so101-piano-teacher
+cd so101-piano-teacher
+uv run --with-requirements scripts/requirements-keys.txt pytest scripts/test_keys.py -q
+```
+
+Everything runs from the repository root with the same prefix:
+
+```bash
+uv run --with-requirements scripts/requirements-keys.txt scripts/keys_listen.py check mi
+```
+
+Each script starts with a docstring that explains what it does and how to run it.
+
+## Things you will need to change for your own rig
+
+- Serial ports and the robot id (`/dev/tty.usbmodem...`, `workshop_so101`) in the shell scripts and defaults
+- Camera index and audio device names in `scripts/keys_cameras*.json`
+- Hugging Face repository ids (`PawelLach/...`) for datasets and models
+- `keys_poses.json` and `keys.json`: the saved arm poses and key sounds of my keyboard position
+
+The trained policies only know my keyboard position, camera view and lighting. They will not work on another
+rig without new recordings. The datasets and models are not public yet.
+
+## Optional services
+
+- [ai-coustics](https://ai-coustics.com) Quail Voice Focus cleans spoken commands. Needs `AIC_SDK_LICENSE`.
+- `keys_pitch_judge.py judge` uploads audio clips to Google. Needs `GEMINI_API_KEY`.
+
+Keys are read from the environment first, then from the `.env` file named at the top of the script.
+Never commit them.
+
+## Built on
+
+[LeRobot](https://github.com/huggingface/lerobot), pinned in `pyproject.toml` to the commit these scripts
+were written against, and [SwiftF0](https://pypi.org/project/swift-f0/).

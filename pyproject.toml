@@ -1,0 +1,23 @@
+[project]
+name = "so101-piano-teacher"
+version = "0.1.0"
+description = "An SO-101 arm that plays a MIDI keyboard, hears the notes it plays, and gives singing lessons with a Reachy Mini"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # LeRobot pinned to the commit these scripts were written against.
+    "lerobot[feetech,smolvla,dataset] @ git+https://github.com/huggingface/lerobot@f5c9bc02137c331b009eccd44ece6f11b62187a8",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff"]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.pytest.ini_options]
+testpaths = ["scripts"]
