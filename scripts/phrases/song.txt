@@ -1,0 +1,3 @@
+# The riff from song.txt as one episode. The rule: keys 3 and 5 are always pressed three times, every
+# other key once. Hovering above key 5 looks the same after its first, second and third press.
+1 2 5 5 5 4 6 3 3 3

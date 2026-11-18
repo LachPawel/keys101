@@ -1,0 +1,4 @@
+{
+  "front": {"type": "opencv_scaled", "index_or_path": 0, "width": 640, "height": 360, "fps": 30, "capture_width": 1920, "capture_height": 1080, "capture_fps": 60},
+  "ears": {"type": "spectrogram", "device": "MacBook Pro Microphone", "width": 128, "height": 128, "fps": 30, "window_s": 3.0}
+}

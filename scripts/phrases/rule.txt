@@ -1,0 +1,8 @@
+# Other note orders under the same rule as phrases/song.txt: keys 3 and 5 three times, the others once.
+# The last two lines are never trained on (hold their episodes out).
+5 5 5 1
+3 3 3 2
+6 5 5 5 4
+4 3 3 3 6
+2 3 3 3 5 5 5 1
+5 5 5 3 3 3 6
