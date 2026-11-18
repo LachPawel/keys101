@@ -179,8 +179,8 @@ In band mode the arm loops a riff, John, the singing head on the screen, sings a
 over it on their own instrument.
 
 You cannot hear pitch, so never offer to match their humming or to coach their breathing. Only the backend can \
-measure pitch. When the backend gives you a result, say it in character, but keep every note name and every \
-number exactly as given."""
+measure pitch. When the backend gives you a result, say it in character and keep every note name exactly as \
+given. Never read out numbers like cents or seconds: say what to do with the voice instead."""
 
 INSTRUCTIONS = """You are Reachy, a tiny, cute robot with antennas who coaches singing and takes the job \
 far less seriously than the notes deserve. You are warm, quick and funny: a friend who happens to have \
@@ -211,8 +211,9 @@ a cheerful "On it!". Never describe what the arm did before the backend tells yo
 You cannot hear pitch. Only the backend can measure it. Never say that the user was flat, sharp or in tune \
 unless the backend gave you the measurement.
 
-When the backend gives you a result, say it in character, but keep every note name and every number exactly \
-as given, and do not invite the user to sing unless the backend says so."""
+When the backend gives you a result about singing, say it like a friend standing next to them: short, warm, \
+in plain words. Keep every note name exactly as given, never read out numbers like cents or seconds, and say \
+what to do with the voice instead. Do not invite the user to sing unless the backend says so."""
 
 
 def api_key(env_file: Path = ENV_FILE) -> str:
@@ -717,6 +718,7 @@ FRAME_S = 0.016  # one pitch reading of SwiftF0
 # In tune is within this many cents, any octave. Stricter than the 50 the judge first allowed: on the 55
 # recordings of 18 November every note held on pitch still passes, and near misses get "higher" or "lower".
 JUDGE_CENTS = 40.0
+FAR_CENTS = 150.0  # off by more than this (a whole tone and a half) is "much higher/lower", not "a little"
 CENTRED_CENTS = 20.0  # a near miss closer than this is about holding the note; further, about the pitch
 SOLFEGE_OF = {0: "do", 2: "re", 4: "mi", 5: "fa", 7: "sol", 9: "la", 11: "ti"}
 
@@ -792,7 +794,8 @@ def judge_singing(
     elif abs(cents) < CENTRED_CENTS:  # centred on the note, never kept on it: the fix is the hold
         answer = "Hold it longer."
     else:  # off, or near the line and wobbling across it: the fix is the pitch
-        answer = "A little higher." if cents < 0 else "A little lower."
+        way = "higher" if cents < 0 else "lower"
+        answer = f"A little {way}." if abs(cents) < FAR_CENTS else f"Much {way}."
     # the note they actually sang, when they settled on another one
     # (a clear miss onto a note of the scale: 69 cents flat is a flat mi, not "really re sharp")
     landed = (target + s["sat_on"]) % 12
@@ -815,6 +818,23 @@ def judge_singing(
 
 def target_hz(midi: int) -> float:
     return 440.0 * 2 ** ((midi - 69) / 12)
+
+
+def verdict_words(note: str, result: dict[str, Any]) -> tuple[str, str]:
+    """The verdict on a sung note in plain words, for the teacher to say: no cents, no seconds. Returns the
+    fact and the short answer. The numbers stay on the display."""
+    if result["cents"] is None:
+        return f"Nothing clear was heard for {note}.", result["answer"]
+    if result["ok"]:
+        return f"The user sang {note} in tune and held it.", result["answer"]
+    if result["answer"] == "Hold it longer.":  # on the note, but only in passing
+        return f"The user found {note}, but only for a moment.", "Hold it. One full second."
+    off = abs(result["cents"])
+    side = "low" if result["cents"] < 0 else "high"
+    size = "a little " if off < 60 else "" if off < FAR_CENTS else "far too "
+    if result.get("sat_on"):  # they settled on another note: the most useful thing to hear
+        return f"The user sang {result['sat_on']} instead of {note}, {size}{side}.", result["answer"]
+    return f"The user sang {note} {size}{side}.", result["answer"]
 
 
 class Teacher:
@@ -1070,25 +1090,11 @@ class Teacher:
             keep_clip(note, voice, result, "_vf")
         emit("sung", note=note, cents=result["cents"], answer=result["answer"], held=result["held"], ok=result["ok"])
         self.missed = None if result["ok"] else result  # what the next try, and its tip, are about
-        if result["cents"] is None:
-            return f"Nothing clear was heard for {note}.", result["answer"]
-        if result["ok"]:
-            return f"The user sang {note} and was in tune.", result["answer"]
-        side = "flat" if result["cents"] < 0 else "sharp"
-        off = abs(round(result["cents"]))
-        if result["answer"] == "Hold it longer.":  # on the note on average, but only in passing: how briefly
-            return (
-                f"The user only passed through {note}: in tune for {result['held']:.1f} seconds in one go, "
-                f"and off it for {result['off_s']:.1f} seconds. It takes one full second on the note. "
-                "Say so plainly, and kindly.",
-                "Hold it. One full second.",
-            )
-        fact = f"The user sang {note} and was {off} cents {side}."
-        if result.get("sat_on"):  # they settled on another note: name it, it is the most useful thing to hear
-            fact += f" They were really singing {result['sat_on']}, not {note}."
-        if result["held"] >= 0.15:  # they did touch it: say how briefly, and how long they were off
-            fact += f" They touched the note for {result['held']:.1f} seconds and were off it for {result['off_s']:.1f}."
-        return fact, result["answer"]
+        return verdict_words(note, result)
+
+    def say(self, fact: str, answer: str, then: str = "") -> str:
+        """What the teacher is told to say about a sung note: plain words, no numbers, one fix."""
+        return f"{fact} Say it in one or two short sentences, no numbers: {answer}{then}"
 
     def tip(self) -> str:
         """One concrete thing to do with the voice after the last miss, for the teacher to pass on; "" after
@@ -1105,12 +1111,8 @@ class Teacher:
         )
         self.tips += 1
         advice = TIPS[kind][self.tips % len(TIPS[kind])]
-        watch = (
-            " Tell them to watch John next: he starts where they were and slides to the note."
-            if self.show_s > 0 and kind in ("up", "down")
-            else ""
-        )
-        return f" Then pass on this one tip, in your own words, lightly: {advice}{watch}"
+        watch = " Then: watch John slide to it." if self.show_s > 0 and kind in ("up", "down") else ""
+        return f" One fix, in a few words of your own: {advice}{watch}"
 
     def slide(self) -> float | None:
         """For John, on a retry: how far off the last try was (cents), when it was off the note. Else None."""
@@ -1130,7 +1132,7 @@ class Teacher:
         self.missed = None
         for attempt in (1, 2):  # a second go when nothing was heard, while the teacher's ears stay closed
             fact, answer = await self.sing_back(note, delegation_id, self.slide())
-            await self.tell(delegation_id, f"{fact} Tell them that, then: {answer}{self.tip()}")
+            await self.tell(delegation_id, self.say(fact, answer, self.tip()))
             if not fact.startswith(("Nothing clear", "The piano kept", "The arm did not")) or attempt == 2:
                 break
             await self.audio.finished_speaking()
@@ -1176,7 +1178,7 @@ class Teacher:
                         if not last_try
                         else ""
                     )
-                    await self.tell(delegation_id, f"{fact} Tell them that, then: {answer}{after}")
+                    await self.tell(delegation_id, self.say(fact, answer, after))
                     await self.audio.finished_speaking()
                     if last_try:
                         in_tune += int(good)

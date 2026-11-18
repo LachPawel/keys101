@@ -970,10 +970,11 @@ def test_a_note_counts_only_when_it_is_held_in_tune_for_a_second() -> None:
     # Off most of the time, on it for a second at the end: the hold never rescues a wrong note.
     late = np.concatenate([silence, kpj.sung_tone(hz(49), rng, seconds=2.5), kpj.sung_tone(hz(52), rng, seconds=1.2)])
     result, _ = keys_voice.judge_singing(late, "mi")
-    assert not result["ok"] and result["answer"] == "A little higher." and result["off_s"] > 2.0
+    assert not result["ok"] and result["answer"] == "Much higher." and result["off_s"] > 2.0
     # Settled on another note of the scale: it is named. Do instead of mi, an octave down.
     other, _ = keys_voice.judge_singing(kpj.sung_tone(hz(48), rng), "mi")
-    assert other["answer"] == "A little higher." and other["sat_on"] == "do"
+    assert other["answer"] == "Much higher." and other["sat_on"] == "do"
+    assert keys_voice.verdict_words("mi", other)[0] == "The user sang do instead of mi, far too low."
     # A near miss is just flat, not "another note".
     assert keys_voice.judge_singing(kpj.sung_tone(hz(51.3), rng), "mi")[0]["sat_on"] is None
     # Never on it: the old verdict, and nothing was held.
@@ -1126,9 +1127,10 @@ def test_voice_teacher_routes_requests_to_the_arm_and_the_pitch_check() -> None:
         await user_says("let's start the lesson")
         assert arm.asked == [["mi"], ["mi"], ["sol"], ["la"]]
         facts = [e["content"] for e in sent if e["type"] == "session.commentary.append"]
-        assert "cents flat. Tell them that, then: A little higher." in facts[1]
-        assert "Then pass on this one tip" in facts[1] and "Then have them try mi once more." in facts[1]
-        assert facts[2].startswith("The user sang mi and was in tune. Tell them that, then: Well done.")
+        assert facts[1].startswith("The user sang mi low. Say it in one or two short sentences, no numbers: A little higher.")
+        assert "One fix, in a few words of your own:" in facts[1] and "Then have them try mi once more." in facts[1]
+        assert not any(ch.isdigit() for ch in facts[1])  # no cents, no seconds: plain words
+        assert facts[2].startswith("The user sang mi in tune and held it. Say it in one or two short sentences, no numbers: Well done.")
         assert "Then push them on to the next note, sol" in facts[2]
         assert facts[-1].startswith("The lesson is over: 3 of 3 notes in tune.")
         assert "another round" in facts[-1]
@@ -1149,8 +1151,8 @@ def test_voice_teacher_routes_requests_to_the_arm_and_the_pitch_check() -> None:
         await user_says("am I in tune on sol?")
         assert arm.asked == [["sol"], ["sol"]]
         facts = [e["content"] for e in sent if e["type"] == "session.commentary.append"]
-        assert "cents sharp. Tell them that, then: A little lower." in facts[1]
-        assert facts[3] == "The user sang sol and was in tune. Tell them that, then: Well done."
+        assert facts[1].startswith("The user sang sol high. Say it in one or two short sentences, no numbers: A little lower.")
+        assert facts[3] == "The user sang sol in tune and held it. Say it in one or two short sentences, no numbers: Well done."
 
         # A key the arm leaves resting down does not stop the measurement: that note fades within seconds.
         await teacher.on_event({"type": "session.output_transcript.delta", "delta": "Ok."})
@@ -1160,7 +1162,7 @@ def test_voice_teacher_routes_requests_to_the_arm_and_the_pitch_check() -> None:
         arm.held = False
         assert arm.asked == [["la"]]
         facts = [e["content"] for e in sent if e["type"] == "session.commentary.append"]
-        assert facts[1] == "The user sang la and was in tune. Tell them that, then: Well done."
+        assert facts[1] == "The user sang la in tune and held it. Say it in one or two short sentences, no numbers: Well done."
 
         # Beginner mode: the arm plays, John sings it on the display, then the arm plays it again: your turn.
         await teacher.on_event({"type": "session.output_transcript.delta", "delta": "Ok."})
@@ -1172,7 +1174,7 @@ def test_voice_teacher_routes_requests_to_the_arm_and_the_pitch_check() -> None:
         facts = [e["content"] for e in sent if e["type"] == "session.commentary.append"]
         assert "John, the singing head on the screen" in facts[0]
         assert facts[1] == 'Say exactly these three words and nothing else: "Now your turn."'  # before the arm's repeat
-        assert facts[2] == "The user sang mi and was in tune. Tell them that, then: Well done."
+        assert facts[2] == "The user sang mi in tune and held it. Say it in one or two short sentences, no numbers: Well done."
 
         # The warm-up: up and down the six notes, nothing recorded. A level said out loud sets John.
         await teacher.on_event({"type": "session.output_transcript.delta", "delta": "Ok."})
