@@ -1,0 +1,4 @@
+# Alors on danse, easy solo.
+# One phrase per line. Key numbers 1 to 6, separated by spaces. '#' starts a comment.
+1 2 5 5 5
+4 6 3 3 3
