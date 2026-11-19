@@ -2,12 +2,16 @@
 """Reachy Mini's head and antennas: still while the arm plays, alive the rest of the time.
 
 The arm's camera is Reachy's head, and the policy learned from that exact view. So while the arm plays,
-the head goes back to one saved pose and holds it. The rest of the time it sways, leans in while you sing,
-bobs its antennas while the teacher talks, and wiggles them when you sing in tune.
+the head goes back to one saved pose and holds it; the teacher waits for it to get there (`lock`) before
+the arm sets off. The rest of the time it sways, leans in while you sing, bobs its antennas while the
+teacher talks, and wiggles them when you sing in tune. And when someone speaks, it turns to look at them:
+the microphone array in its head says where speech comes from (the booth's sound following).
 
     uv run --with-requirements scripts/requirements-keys.txt scripts/keys_reachy.py save   # keep today's pose
     uv run --with-requirements scripts/requirements-keys.txt scripts/keys_reachy.py show   # print the pose now
     uv run --with-requirements scripts/requirements-keys.txt scripts/keys_reachy.py try    # 6 s of moves
+    uv run --with-requirements scripts/requirements-keys.txt scripts/keys_reachy.py doa    # where speech comes from
+    uv run --with-requirements scripts/requirements-keys.txt scripts/keys_reachy.py lock   # back to the saved pose
 
 The stage display (keys_ui.py) moves the head while it runs; nothing else needs starting. It talks to the
 Reachy Mini daemon on this computer (the Reachy Mini Control app), at http://127.0.0.1:8000.
@@ -31,6 +35,20 @@ HOST, PORT = "127.0.0.1", 8000
 HZ = 25
 # The arm counts as playing this long after it says it is done: the policy's last moves, the lift.
 SETTLE_S = 0.6
+
+# Looking at whoever speaks. Angles in radians; yaw is positive to Reachy's left.
+LOOK_PHASES = {"idle", "listening", "thinking", "your_turn", "feedback"}  # not while the arm or John plays
+DOA_EVERY_S = 0.1  # how often the microphone array is asked where speech comes from
+CONFIRM_S, CONFIRM_RAD = 0.35, math.radians(25)  # two readings this close in time and angle: a person
+GAZE_HOLD_S = 3.5  # keep looking this long after the last speech heard from there
+QUIET_AFTER_TALK_S = 1.5  # Reachy's own voice must not turn its head: no new bearings while it speaks
+QUIET_AFTER_ARM_S = 1.5  # nor the piano still ringing after the arm played
+TURN_MAX = 1.6  # the farthest Reachy turns from the keys, about 90 degrees each way
+HEAD_TURN_MAX = 0.6  # the head turns this far on the body; the body turns for the rest
+GAZE_PITCH = -0.1  # head pitch while looking at a person: about eye level (the keys are at +0.5)
+MAX_STEP = 0.07  # the most yaw or body yaw changes per tick: about 100 degrees per second
+# How close counts as "back on the saved pose" before the arm may start.
+NEAR_RAD, NEAR_M = 0.05, 0.004
 
 
 class Daemon:
@@ -72,10 +90,130 @@ class Daemon:
 
     def goto(self, pose: dict[str, Any], seconds: float) -> None:
         body = {"head_pose": pose["head"], "antennas": pose["antennas"], "duration": seconds}
+        if pose.get("body_yaw") is not None:
+            body["body_yaw"] = pose["body_yaw"]
         self.call("POST", "/api/move/goto", {**body, "interpolation": "minjerk"})
 
-    def target(self, head: dict[str, float], antennas: list[float]) -> None:
-        self.call("POST", "/api/move/set_target", {"target_head_pose": head, "target_antennas": antennas})
+    def target(self, head: dict[str, float], antennas: list[float], body_yaw: float | None = None) -> None:
+        body: dict[str, Any] = {"target_head_pose": head, "target_antennas": antennas}
+        if body_yaw is not None:
+            body["target_body_yaw"] = body_yaw
+        self.call("POST", "/api/move/set_target", body)
+
+    def doa(self) -> tuple[float, bool] | None:
+        """Where sound comes from, by the microphone array in the head: (angle, speech). The angle is 0 on
+        Reachy's left, pi/2 straight ahead, pi on its right, relative to the head. None with no array."""
+        reading = self.call("GET", "/api/state/doa")
+        if not reading:
+            return None
+        angle = float(reading["angle"])
+        if not (math.isfinite(angle) and 0.0 <= angle <= math.pi):
+            return None
+        return angle, bool(reading["speech_detected"])
+
+
+def wrap(angle: float) -> float:
+    """An angle in (-pi, pi]."""
+    return math.atan2(math.sin(angle), math.cos(angle))
+
+
+def sound_yaw(angle: float, head: dict[str, float]) -> float:
+    """The world yaw a microphone-array reading points at. The array turns with the head, so the head's
+    roll, pitch and yaw (extrinsic x, y, z) carry it round. Front and back sound the same to it: front."""
+    x, y, z = math.sin(angle), math.cos(angle), 0.0
+    r, p, w = float(head["roll"]), float(head["pitch"]), float(head["yaw"])
+    y, z = y * math.cos(r) - z * math.sin(r), y * math.sin(r) + z * math.cos(r)
+    x, z = x * math.cos(p) + z * math.sin(p), -x * math.sin(p) + z * math.cos(p)
+    x, y = x * math.cos(w) - y * math.sin(w), x * math.sin(w) + y * math.cos(w)
+    return math.atan2(y, x)
+
+
+class Gaze:
+    """Two consistent speech bearings make a person to look at; the look lasts a while after they stop."""
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.candidate: float | None = None
+        self.seen_at = -math.inf
+        self.target: float | None = None
+        self.until = -math.inf
+
+    def heard(self, yaw: float, now: float) -> None:
+        """One speech reading from world yaw `yaw`."""
+        consistent = (
+            self.candidate is not None
+            and now - self.seen_at < CONFIRM_S
+            and abs(wrap(yaw - self.candidate)) < CONFIRM_RAD
+        )
+        self.candidate, self.seen_at = yaw, now
+        if consistent:
+            self.target, self.until = yaw, now + GAZE_HOLD_S
+
+    def keep(self, now: float, seconds: float) -> None:
+        """Keep looking at the same person a little longer (Reachy answers them)."""
+        if self.current(now) is not None:
+            self.until = max(self.until, now + seconds)
+
+    def current(self, now: float) -> float | None:
+        return self.target if now < self.until else None
+
+
+def aim(pose: dict[str, Any], yaw: float) -> tuple[float, float, float]:
+    """Head yaw, head pitch and body yaw that look toward world yaw `yaw`, as far as TURN_MAX from the
+    keys. The head turns up to HEAD_TURN_MAX on the body; the body turns for the rest."""
+    base_yaw, base_body = float(pose["head"]["yaw"]), float(pose.get("body_yaw") or 0.0)
+    turn = max(-TURN_MAX, min(TURN_MAX, wrap(yaw - base_yaw)))
+    body = math.copysign(max(0.0, abs(turn) - HEAD_TURN_MAX), turn)
+    return base_yaw + turn, GAZE_PITCH, base_body + body
+
+
+def near(now: dict[str, Any], pose: dict[str, Any]) -> bool:
+    """Whether the head (and body) are back on the saved pose, close enough for the policy's camera."""
+    a, b = now["head"], pose["head"]
+    if any(abs(wrap(float(a[k]) - float(b[k]))) > NEAR_RAD for k in ("roll", "pitch", "yaw")):
+        return False
+    if any(abs(float(a[k]) - float(b[k])) > NEAR_M for k in ("x", "y", "z")):
+        return False
+    if pose.get("body_yaw") is not None and now.get("body_yaw") is not None:
+        return abs(wrap(float(now["body_yaw"]) - float(pose["body_yaw"]))) <= NEAR_RAD
+    return True
+
+
+def travel_s(now: dict[str, Any] | None, pose: dict[str, Any]) -> float:
+    """How long the trip back to the saved pose takes: quick from close by, slower from looking away."""
+    if now is None:
+        return 0.45
+    far = max(abs(wrap(float(now["head"][k]) - float(pose["head"][k]))) for k in ("roll", "pitch", "yaw"))
+    if pose.get("body_yaw") is not None and now.get("body_yaw") is not None:
+        far = max(far, abs(wrap(float(now["body_yaw"]) - float(pose["body_yaw"]))))
+    return min(1.4, 0.45 + 0.5 * far)
+
+
+def lock(timeout: float = 2.5, daemon: Daemon | None = None) -> bool:
+    """Bring the head back to the saved pose and wait until it is there: the arm's policy sees through it.
+    True once it is there (or when there is no Reachy or no saved pose: nothing to wait for)."""
+    pose = load()
+    if pose is None:
+        return True
+    daemon = daemon or Daemon()
+    end, sent = time.time() + timeout, -math.inf
+    try:
+        while True:
+            now_pose = daemon.pose()
+            if near(now_pose, pose):
+                return True
+            t = time.time()
+            if t >= end:
+                print("Reachy: the head did not get back to the saved pose in time; the arm starts anyway.")
+                return False
+            if t - sent > 0.8:  # (again, if something else moved it meanwhile)
+                daemon.goto(pose, travel_s(now_pose, pose))
+                sent = t
+            time.sleep(0.05)
+    except (OSError, KeyError, TypeError, ValueError):
+        return True
 
 
 def save(daemon: Daemon, path: Path | None = None) -> dict[str, Any]:
@@ -142,8 +280,9 @@ def mood_of(state: dict[str, Any], now: float, last_talk: float, joy_until: floa
     return "idle"
 
 
-def follow(hub: Any, stop: threading.Event, daemon: Daemon | None = None) -> None:
-    """Move the head from the stage display's picture of the rig (keys_ui.Hub), until stopped."""
+def follow(hub: Any, stop: threading.Event, daemon: Daemon | None = None, look: bool = True) -> None:
+    """Move the head from the stage display's picture of the rig (keys_ui.Hub), until stopped. With `look`,
+    it also turns toward whoever speaks while the arm is still."""
     daemon = daemon or Daemon()
     pose = load()
     if pose is None:
@@ -154,11 +293,17 @@ def follow(hub: Any, stop: threading.Event, daemon: Daemon | None = None) -> Non
     except OSError as error:
         print(f"Reachy stays still: no Reachy Mini daemon at {HOST}:{PORT} ({error}).")
         return
-    print("Reachy: holds the saved pose while the arm plays, moves otherwise.")
+    print(
+        "Reachy: holds the saved pose while the arm plays, moves otherwise"
+        + (", and looks at whoever speaks." if look else ".")
+    )
     holding, busy_until, last_talk, joy_until, teacher_len = False, 0.0, 0.0, 0.0, 0
     sung_seen, results_seen = None, 0
     smooth_head: dict[str, float] | None = None
     smooth_antennas: list[float] | None = None
+    smooth_body: float | None = None
+    base_body = float(pose.get("body_yaw") or 0.0)
+    gaze, next_doa, doa_ok = Gaze(), 0.0, look
     mood, since = "idle", time.time()
     while not stop.is_set():
         time.sleep(1 / HZ)
@@ -186,21 +331,54 @@ def follow(hub: Any, stop: threading.Event, daemon: Daemon | None = None) -> Non
         try:
             if now < busy_until:  # the arm plays: the camera must see what the policy learned from
                 if not holding:
-                    daemon.goto(pose, 0.45)
-                    holding, smooth_head, smooth_antennas = True, None, None
+                    last = None if smooth_head is None else {"head": smooth_head, "body_yaw": smooth_body}
+                    daemon.goto(pose, travel_s(last, pose))
+                    holding, smooth_head, smooth_antennas, smooth_body = True, None, None, None
+                    gaze.reset()
                 continue
             holding = False
             new_mood = mood_of(state, now, last_talk, joy_until)
             if new_mood != mood:
                 mood, since = new_mood, now
             head, antennas = moved(pose, *offsets(mood, now, since))
-            if smooth_head is None or smooth_antennas is None:
+            if smooth_head is None or smooth_antennas is None or smooth_body is None:
                 smooth_head, smooth_antennas = dict(pose["head"]), list(pose["antennas"])
+                smooth_body = base_body
+            # Who is speaking, and from where: not while Reachy itself talks, John sings or a note rings.
+            if (
+                doa_ok
+                and now >= next_doa
+                and state.get("phase", "idle") in LOOK_PHASES
+                and now - last_talk > QUIET_AFTER_TALK_S
+                and now > busy_until + QUIET_AFTER_ARM_S
+            ):
+                next_doa = now + DOA_EVERY_S
+                try:
+                    reading = daemon.doa()
+                except OSError as error:
+                    if "HTTP 404" not in str(error):
+                        raise
+                    reading, doa_ok = None, False  # an older daemon: no looking, the rest carries on
+                    print("Reachy: this daemon gives no sound direction; it won't turn to voices.")
+                if reading is not None and reading[1]:
+                    gaze.heard(sound_yaw(reading[0], smooth_head), now)
+            if mood == "talk":
+                gaze.keep(now, 1.0)  # it answers the person it was looking at
+            body_target = base_body
+            looking = gaze.current(now)
+            if looking is not None:
+                yaw, pitch, body_target = aim(pose, looking)
+                head["pitch"] = pitch + 0.5 * (head["pitch"] - float(pose["head"]["pitch"]))  # keep the nods
+                head["yaw"] = yaw
             k = 0.12  # ease toward the target: mood changes glide instead of jump
             for key in head:
-                smooth_head[key] += k * (head[key] - smooth_head[key])
+                step = k * (head[key] - smooth_head[key])
+                if key == "yaw":
+                    step = max(-MAX_STEP, min(MAX_STEP, step))
+                smooth_head[key] += step
+            smooth_body += max(-MAX_STEP, min(MAX_STEP, k * (body_target - smooth_body)))
             smooth_antennas = [a + 0.25 * (b - a) for a, b in zip(smooth_antennas, antennas, strict=True)]
-            daemon.target(smooth_head, smooth_antennas)
+            daemon.target(smooth_head, smooth_antennas, smooth_body)
         except OSError as error:
             print(f"Reachy: {error}. Trying again in 2 s.")
             time.sleep(2.0)
@@ -212,9 +390,24 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("command", choices=["save", "show", "try"])
+    parser.add_argument("command", choices=["save", "show", "try", "doa", "lock"])
     args = parser.parse_args(argv)
     daemon = Daemon()
+    if args.command == "doa":
+        print("Speak from different sides. Ctrl+C stops. (0 = straight ahead, + = Reachy's left)")
+        with contextlib.suppress(KeyboardInterrupt):
+            while True:
+                reading = daemon.doa()
+                if reading is None:
+                    print("no reading (no microphone array, or none yet)")
+                else:
+                    world = math.degrees(sound_yaw(reading[0], daemon.pose()["head"]))
+                    print(f"{world:+6.0f} deg  {'speech' if reading[1] else '-'}")
+                time.sleep(0.2)
+        return
+    if args.command == "lock":
+        print("At the saved pose." if lock(daemon=daemon) else "Not there yet.")
+        return
     if args.command == "save":
         pose = save(daemon)
         print(f"Saved to {POSE_FILE}: {json.dumps(pose)}")

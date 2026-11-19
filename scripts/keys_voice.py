@@ -45,6 +45,7 @@ from typing import Any, Protocol
 import keys_companion as kc
 import keys_listen
 import keys_play
+import keys_reachy
 import numpy as np
 from keys_common import SOLFEGE
 from keys_scripted import open_midi
@@ -372,6 +373,9 @@ class PolicyHands:
         while index < len(notes):
             note = notes[index]
             try:
+                if not running:
+                    # The arm's camera is Reachy's head: it may be looking at you. Back to the saved pose first.
+                    keys_reachy.lock()
                 before = len(self.presses())
                 self.tell(f"/subtask {keys_play.task_text(note)}")
                 if not running:

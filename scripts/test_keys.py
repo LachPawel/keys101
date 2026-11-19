@@ -1540,8 +1540,11 @@ def test_reachy_holds_the_saved_pose_while_the_arm_plays(tmp_path: Path) -> None
         def goto(self, pose: dict, seconds: float) -> None:
             self.calls.append(("goto", pose))
 
-        def target(self, head: dict, antennas: list) -> None:
+        def target(self, head: dict, antennas: list, body_yaw: float | None = None) -> None:
             self.calls.append(("target", {"head": head, "antennas": antennas}))
+
+        def doa(self) -> None:
+            return None
 
     daemon = FakeDaemon()
     saved = daemon.pose()
@@ -1575,3 +1578,84 @@ def test_reachy_holds_the_saved_pose_while_the_arm_plays(tmp_path: Path) -> None
     stop.set()
     thread.join(timeout=3)
     assert daemon.calls[-1] == ("goto", saved)  # and left where the policy expects it
+
+
+def test_reachy_turns_toward_speech_and_comes_back_for_the_arm(tmp_path: Path) -> None:
+    import math
+    import threading
+
+    import keys_reachy
+    import keys_ui
+
+    # The array's angle: 0 on Reachy's left, pi/2 ahead, pi on its right; it turns with the head.
+    level = {"roll": 0.0, "pitch": 0.0, "yaw": 0.0}
+    assert abs(keys_reachy.sound_yaw(math.pi / 2, level)) < 1e-9
+    assert abs(keys_reachy.sound_yaw(0.0, level) - math.pi / 2) < 1e-9
+    assert abs(keys_reachy.sound_yaw(math.pi / 2, {**level, "yaw": 0.4}) - 0.4) < 1e-9
+    assert abs(keys_reachy.sound_yaw(math.pi / 2, {**level, "pitch": 0.5})) < 1e-9  # looking down at the keys
+
+    # One reading is not a person; two that agree are, and the look lasts a while.
+    gaze = keys_reachy.Gaze()
+    gaze.heard(1.0, 0.0)
+    assert gaze.current(0.0) is None
+    gaze.heard(1.05, 0.1)
+    assert gaze.current(0.2) == 1.05 and gaze.current(0.1 + keys_reachy.GAZE_HOLD_S + 0.01) is None
+    other = keys_reachy.Gaze()
+    other.heard(1.0, 0.0)
+    other.heard(-1.0, 0.1)  # two different places: nobody yet
+    assert other.current(0.2) is None
+
+    pose = {"head": {"x": 0, "y": 0, "z": 0, "roll": 0, "pitch": 0.5, "yaw": 0.15}, "antennas": [0, 0], "body_yaw": 0.0}
+    yaw, pitch, body = keys_reachy.aim(pose, 1.5)
+    assert abs(yaw - 1.5) < 1e-9 and pitch == keys_reachy.GAZE_PITCH
+    assert abs(body - (1.5 - 0.15 - keys_reachy.HEAD_TURN_MAX)) < 1e-9  # the body turns for the rest
+    assert abs(keys_reachy.aim(pose, 3.0)[0] - (0.15 + keys_reachy.TURN_MAX)) < 1e-9  # never past the limit
+    assert keys_reachy.near(pose, pose)
+    assert not keys_reachy.near({**pose, "body_yaw": 0.3}, pose)
+
+    class FakeDaemon:
+        def __init__(self) -> None:
+            self.now = {"head": dict(pose["head"]), "antennas": [0.0, 0.0], "body_yaw": 0.0}
+            self.targets: list[tuple[dict, float | None]] = []
+            self.gotos: list[dict] = []
+
+        def pose(self) -> dict:
+            return {"head": dict(self.now["head"]), "antennas": list(self.now["antennas"]), "body_yaw": self.now["body_yaw"]}
+
+        def goto(self, target: dict, seconds: float) -> None:
+            self.gotos.append(target)
+            self.now = {"head": dict(target["head"]), "antennas": list(target["antennas"]), "body_yaw": target["body_yaw"]}
+
+        def target(self, head: dict, antennas: list, body_yaw: float | None = None) -> None:
+            self.targets.append((dict(head), body_yaw))
+            self.now = {"head": dict(head), "antennas": list(antennas), "body_yaw": body_yaw}
+
+        def doa(self) -> tuple[float, bool]:
+            return 0.2, True  # someone talking from Reachy's far left
+
+    daemon = FakeDaemon()
+    keys_reachy.POSE_FILE = tmp_path / "reachy_pose.json"
+    keys_reachy.POSE_FILE.write_text(json.dumps(pose))
+    hub, stop = keys_ui.Hub(), threading.Event()
+    thread = threading.Thread(target=keys_reachy.follow, args=(hub, stop, daemon), daemon=True)
+    thread.start()
+    time.sleep(1.5)
+    head, body = daemon.targets[-1]
+    assert head["yaw"] > 0.6 and body is not None and body > 0.05  # it turned left, body too
+    assert not keys_reachy.near(daemon.pose(), pose)
+    hub.event({"kind": "tune", "notes": ["mi"]})  # the arm is about to play
+    assert keys_reachy.lock(timeout=2.0, daemon=daemon)  # type: ignore[arg-type]
+    assert keys_reachy.near(daemon.pose(), pose) and daemon.gotos[-1]["body_yaw"] == 0.0
+    stop.set()
+    thread.join(timeout=3)
+
+    # No speech: it does not turn.
+    quiet = FakeDaemon()
+    quiet.doa = lambda: (0.2, False)  # type: ignore[method-assign]
+    hub2, stop2 = keys_ui.Hub(), threading.Event()
+    thread2 = threading.Thread(target=keys_reachy.follow, args=(hub2, stop2, quiet), daemon=True)
+    thread2.start()
+    time.sleep(0.8)
+    assert all(abs(h["yaw"] - 0.15) < 0.3 and (b is None or abs(b) < 1e-6) for h, b in quiet.targets)
+    stop2.set()
+    thread2.join(timeout=3)

@@ -617,6 +617,12 @@ def main(argv: list[str] | None = None) -> None:
         default="auto",
         help="Move Reachy Mini's head between notes (keys_reachy.py). Off with --demo",
     )
+    parser.add_argument(
+        "--look",
+        choices=["on", "off"],
+        default="on",
+        help="Reachy turns to look at whoever speaks while the arm is still (its microphone array)",
+    )
     args = parser.parse_args(argv)
     web = find_web(args.web)
 
@@ -633,7 +639,9 @@ def main(argv: list[str] | None = None) -> None:
     if args.reachy == "auto" and not args.demo:
         import keys_reachy
 
-        reachy = threading.Thread(target=keys_reachy.follow, args=(hub, stop), daemon=True)
+        reachy = threading.Thread(
+            target=keys_reachy.follow, args=(hub, stop), kwargs={"look": args.look == "on"}, daemon=True
+        )
         reachy.start()
 
     try:
