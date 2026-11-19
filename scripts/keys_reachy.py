@@ -47,8 +47,11 @@ TURN_MAX = 1.6  # the farthest Reachy turns from the keys, about 90 degrees each
 HEAD_TURN_MAX = 0.6  # the head turns this far on the body; the body turns for the rest
 GAZE_PITCH = -0.1  # head pitch while looking at a person: about eye level (the keys are at +0.5)
 MAX_STEP = 0.07  # the most yaw or body yaw changes per tick: about 100 degrees per second
-# How close counts as "back on the saved pose" before the arm may start.
-NEAR_RAD, NEAR_M = 0.05, 0.004
+# "Back on the saved pose" before the arm may start: told to go there, roughly there, and no longer moving.
+# Roughly, because under its own weight the head settles up to about 7 degrees short of where it is told,
+# the same way every time (within about 1 degree): what matters is that it was told the saved pose.
+NEAR_RAD, NEAR_M = 0.25, 0.01
+STILL_RAD, STILL_M = 0.004, 0.001  # change between two readings 0.1 s apart that counts as standing still
 
 
 class Daemon:
@@ -110,6 +113,17 @@ class Daemon:
         if not (math.isfinite(angle) and 0.0 <= angle <= math.pi):
             return None
         return angle, bool(reading["speech_detected"])
+
+    def aimed_at(self, pose: dict[str, Any]) -> bool:
+        """Whether the head is being told to go to `pose` right now (a goto there, or holding there)."""
+        state = self.call("GET", "/api/state/full?with_target_head_pose=true&with_target_body_yaw=true")
+        target = state.get("target_head_pose")
+        if not target:
+            return False
+        if any(abs(float(target[k]) - float(pose["head"][k])) > 1e-3 for k in ("x", "y", "z", "roll", "pitch", "yaw")):
+            return False
+        body = state.get("target_body_yaw")
+        return body is None or pose.get("body_yaw") is None or abs(float(body) - float(pose["body_yaw"])) <= 1e-3
 
 
 def wrap(angle: float) -> float:
@@ -191,27 +205,49 @@ def travel_s(now: dict[str, Any] | None, pose: dict[str, Any]) -> float:
     return min(1.4, 0.45 + 0.5 * far)
 
 
+def still(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """Whether two readings of the pose, taken a moment apart, show the head standing still."""
+    if any(abs(wrap(float(a["head"][k]) - float(b["head"][k]))) > STILL_RAD for k in ("roll", "pitch", "yaw")):
+        return False
+    if any(abs(float(a["head"][k]) - float(b["head"][k])) > STILL_M for k in ("x", "y", "z")):
+        return False
+    if a.get("body_yaw") is not None and b.get("body_yaw") is not None:
+        return abs(float(a["body_yaw"]) - float(b["body_yaw"])) <= STILL_RAD
+    return True
+
+
 def lock(timeout: float = 2.5, daemon: Daemon | None = None) -> bool:
-    """Bring the head back to the saved pose and wait until it is there: the arm's policy sees through it.
-    True once it is there (or when there is no Reachy or no saved pose: nothing to wait for)."""
+    """Bring the head back to the saved pose and wait until it has stopped there: the arm's policy sees
+    through it. True once it has (or when there is no Reachy or no saved pose: nothing to wait for)."""
     pose = load()
     if pose is None:
         return True
     daemon = daemon or Daemon()
-    end, sent = time.time() + timeout, -math.inf
+    end = time.time() + timeout
     try:
+        now_pose = daemon.pose()
+        aimed_at = getattr(daemon, "aimed_at", None)
+        sent, travel = -math.inf, 0.0
+        if aimed_at is None or not aimed_at(pose):  # not already on its way there: send it
+            travel = travel_s(now_pose, pose)
+            daemon.goto(pose, travel)
+            sent = time.time()
+            time.sleep(min(travel, max(0.0, end - time.time())))
+        last = None
         while True:
             now_pose = daemon.pose()
-            if near(now_pose, pose):
+            if last is not None and still(last, now_pose) and near(now_pose, pose):
                 return True
             t = time.time()
             if t >= end:
                 print("Reachy: the head did not get back to the saved pose in time; the arm starts anyway.")
                 return False
-            if t - sent > 0.8:  # (again, if something else moved it meanwhile)
-                daemon.goto(pose, travel_s(now_pose, pose))
+            if not near(now_pose, pose) and t - sent > travel + 0.5:  # something else moved it: again
+                travel = travel_s(now_pose, pose)
+                daemon.goto(pose, travel)
                 sent = t
-            time.sleep(0.05)
+            last = now_pose
+            time.sleep(0.1)
     except (OSError, KeyError, TypeError, ValueError):
         return True
 
