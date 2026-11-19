@@ -12,6 +12,12 @@ the microphone array in its head says where speech comes from (the booth's sound
     uv run --with-requirements scripts/requirements-keys.txt scripts/keys_reachy.py try    # 6 s of moves
     uv run --with-requirements scripts/requirements-keys.txt scripts/keys_reachy.py doa    # where speech comes from
     uv run --with-requirements scripts/requirements-keys.txt scripts/keys_reachy.py lock   # back to the saved pose
+    uv run --with-requirements scripts/requirements-keys.txt scripts/keys_reachy.py align  # match the training view
+
+`align` opens a window with Reachy's camera and the training view's outlines on top (orange), and says what
+to move so the keyboard and the arm sit where they did in training. The head can fix a small turn or tilt
+by itself (press A); a keyboard that is closer, farther or turned has to be moved by hand. S saves the head
+pose it ends on as the new saved pose (the old one is kept as reachy_pose.before-align.json).
 
 The stage display (keys_ui.py) moves the head while it runs; nothing else needs starting. It talks to the
 Reachy Mini daemon on this computer (the Reachy Mini Control app), at http://127.0.0.1:8000.
@@ -24,13 +30,16 @@ import contextlib
 import http.client
 import json
 import math
+import os
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
-POSE_FILE = ROOT / "reachy_pose.json"
+POSE_FILE = Path(os.environ.get("KEYS_REACHY_POSE") or ROOT / "reachy_pose.json")
+REFERENCE = Path(__file__).with_name("keys_front_reference.png")  # median of 48 frames of the 300 episodes
+CAMERAS = Path(__file__).with_name("keys_cameras_midi.json")
 HOST, PORT = "127.0.0.1", 8000
 HZ = 25
 # The arm counts as playing this long after it says it is done: the policy's last moves, the lift.
@@ -422,13 +431,228 @@ def follow(hub: Any, stop: threading.Event, daemon: Daemon | None = None, look: 
         daemon.goto(pose, 0.8)  # leave it where the policy expects it
 
 
+class ViewMatch:
+    """How far Reachy's view is from the training view: the picture's shift (pixels at the centre), turn
+    (degrees) and size (the training keyboard's size over today's), from features both pictures share."""
+
+    MIN_INLIERS = 25
+
+    def __init__(self, reference: Any) -> None:
+        import cv2
+
+        self.cv2 = cv2
+        self.orb = cv2.ORB_create(3000)
+        self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
+        self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        self.size = reference.shape[1], reference.shape[0]
+        self.points, self.features = self.orb.detectAndCompute(self.gray(reference), None)
+
+    def gray(self, image: Any) -> Any:
+        return self.clahe.apply(self.cv2.cvtColor(image, self.cv2.COLOR_BGR2GRAY))
+
+    def measure(self, live: Any) -> dict[str, float] | None:
+        import numpy as np
+
+        cv2 = self.cv2
+        points, features = self.orb.detectAndCompute(self.gray(live), None)
+        if features is None or self.features is None or len(points) < 10:
+            return None
+        pairs = [m[0] for m in self.matcher.knnMatch(features, self.features, k=2) if len(m) == 2 and m[0].distance < 0.75 * m[1].distance]
+        if len(pairs) < self.MIN_INLIERS:
+            return None
+        src = np.float32([points[m.queryIdx].pt for m in pairs])
+        dst = np.float32([self.points[m.trainIdx].pt for m in pairs])
+        warp, inliers = cv2.estimateAffinePartial2D(src, dst, method=cv2.RANSAC, ransacReprojThreshold=3)
+        if warp is None or inliers is None or int(inliers.sum()) < self.MIN_INLIERS:
+            return None
+        cx, cy = self.size[0] / 2, self.size[1] / 2
+        mx, my = warp @ np.array([cx, cy, 1.0])
+        return {
+            "dx": float(mx - cx),  # move today's picture this far right to match (pixels)
+            "dy": float(my - cy),
+            "turn": float(np.degrees(np.arctan2(warp[1, 0], warp[0, 0]))),
+            "scale": float(np.hypot(warp[0, 0], warp[1, 0])),
+            "inliers": int(inliers.sum()),
+        }
+
+
+def advice(m: dict[str, float] | None) -> list[str]:
+    """What to do about a view, in plain words."""
+    if m is None:
+        return [
+            "Too different to compare: line up the orange outlines by hand.",
+            "Move the keyboard (and the arm with it) or Reachy until they roughly match.",
+        ]
+    lines = []
+    if m["scale"] > 1.08:
+        lines.append("The keyboard looks smaller than in training: move it closer to Reachy.")
+    elif m["scale"] < 0.92:
+        lines.append("The keyboard looks bigger than in training: move it away from Reachy.")
+    if abs(m["turn"]) > 6:
+        lines.append(f"The view is turned {abs(m['turn']):.0f} degrees: turn the keyboard to match the outlines.")
+    if abs(m["dx"]) > 8 or abs(m["dy"]) > 8 or abs(m["turn"]) > 0.6:
+        lines.append("Press A: the head turns to line it up.")
+    if not lines:
+        lines.append("Lined up with training. Press S to save this pose.")
+    return lines
+
+
+def solve3(a: list[list[float]], b: list[float]) -> list[float]:
+    """x with a x = b, for a 3x3 a (Cramer's rule); zeros when a is singular."""
+
+    def det(m: list[list[float]]) -> float:
+        return (
+            m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+            - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+        )
+
+    full = det(a)
+    if abs(full) < 1e-9:
+        return [0.0, 0.0, 0.0]
+    out = []
+    for col in range(3):
+        m = [row[:] for row in a]
+        for r in range(3):
+            m[r][col] = b[r]
+        out.append(det(m) / full)
+    return out
+
+
+AXES = ("yaw", "pitch", "roll")
+PROBE_RAD = 0.06  # how far each axis is moved to learn how the picture moves with it
+STEP_MAX = 0.15  # the most one correction moves an axis
+
+
+def align(daemon: Daemon | None = None) -> None:
+    """The interactive window: Reachy's view with the training outlines, advice, and head fine-tuning."""
+    import cv2
+    import numpy as np
+
+    daemon = daemon or Daemon()
+    pose = load()
+    if pose is None:
+        raise SystemExit(f"Save a pose first: keys_reachy.py save ({POSE_FILE})")
+    reference = cv2.imread(str(REFERENCE))
+    if reference is None:
+        raise SystemExit(f"No training view at {REFERENCE}")
+    match = ViewMatch(reference)
+    edges = cv2.dilate(cv2.Canny(cv2.GaussianBlur(cv2.cvtColor(reference, cv2.COLOR_BGR2GRAY), (5, 5), 0), 40, 110), None)
+    camera = json.loads(CAMERAS.read_text())["front"]
+    size = int(camera["width"]), int(camera["height"])
+    cap = cv2.VideoCapture(int(camera["index_or_path"]), cv2.CAP_AVFOUNDATION)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(camera.get("capture_width", size[0])))
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(camera.get("capture_height", size[1])))
+    cap.set(cv2.CAP_PROP_FPS, int(camera.get("capture_fps", camera.get("fps", 30))))
+    if not cap.isOpened():
+        raise SystemExit("Reachy's camera did not open (is the teacher running? It uses the camera too).")
+    command = {**pose, "head": {k: float(v) for k, v in pose["head"].items()}}
+    daemon.goto(command, travel_s(daemon.pose(), command))
+    blend, status = False, "J/L turn, I/K tilt, U/O roll, A auto, B blend, S save, Q quit"
+
+    def grab() -> Any:
+        frame = None
+        for _ in range(4):  # the newest picture, not one from the buffer
+            ok, got = cap.read()
+            if ok:
+                frame = got
+        return None if frame is None else cv2.resize(frame, size, interpolation=cv2.INTER_AREA)
+
+    def settle_and_measure(target: dict[str, Any]) -> dict[str, float] | None:
+        daemon.goto(target, 0.6)
+        time.sleep(1.1)
+        readings = [m for m in (match.measure(f) for f in (grab(), grab(), grab()) if f is not None) if m]
+        if not readings:
+            return None
+        return {k: float(np.median([r[k] for r in readings])) for k in readings[0]}
+
+    def auto() -> str:
+        nonlocal command
+        base = settle_and_measure(command)
+        if base is None:
+            return "Auto: too different to compare. Line up the outlines by hand first."
+        columns = []
+        for axis in AXES:  # how the picture moves when each axis moves a little
+            probe = {**command, "head": {**command["head"], axis: command["head"][axis] + PROBE_RAD}}
+            moved_to = settle_and_measure(probe)
+            if moved_to is None:
+                return "Auto: lost the match while probing; line up by hand."
+            columns.append([(moved_to[k] - base[k]) / PROBE_RAD for k in ("dx", "dy", "turn")])
+        jacobian = [[columns[c][r] for c in range(3)] for r in range(3)]
+        error = base
+        for _ in range(3):
+            step = solve3(jacobian, [-error["dx"], -error["dy"], -error["turn"]])
+            step = [max(-STEP_MAX, min(STEP_MAX, s)) for s in step]
+            command = {**command, "head": {**command["head"], **{a: command["head"][a] + s for a, s in zip(AXES, step)}}}
+            now = settle_and_measure(command)
+            if now is None:
+                return "Auto: lost the match; line up by hand."
+            error = now
+            if abs(error["dx"]) < 4 and abs(error["dy"]) < 4 and abs(error["turn"]) < 0.5:
+                break
+        return f"Auto: off by {error['dx']:+.0f}, {error['dy']:+.0f} px and {error['turn']:+.1f} deg. S saves."
+
+    keys = {ord("j"): ("yaw", 0.01), ord("l"): ("yaw", -0.01), ord("i"): ("pitch", -0.01), ord("k"): ("pitch", 0.01),
+            ord("u"): ("roll", -0.01), ord("o"): ("roll", 0.01)}  # fmt: skip
+    last_measure, measured = 0.0, None
+    try:
+        while True:
+            live = grab()
+            if live is None:
+                status = "No picture from the camera."
+                time.sleep(0.2)
+                continue
+            if time.time() - last_measure > 0.5:
+                measured, last_measure = match.measure(live), time.time()
+            view = cv2.addWeighted(reference, 0.5, live, 0.5, 0) if blend else live.copy()
+            view[edges > 0] = (39, 120, 216)  # the training outlines, in the deck's orange
+            view = cv2.resize(view, (size[0] * 2, size[1] * 2))
+            lines = advice(measured) + [status]
+            if measured is not None:
+                lines.insert(0, f"off by {measured['dx']:+.0f}, {measured['dy']:+.0f} px, turned {measured['turn']:+.1f} deg, "
+                                f"size x{measured['scale']:.2f}  ({measured['inliers']} matches)")  # fmt: skip
+            for n, text in enumerate(lines):
+                y = 34 + 32 * n
+                cv2.putText(view, text, (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 4, cv2.LINE_AA)
+                cv2.putText(view, text, (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.imshow("Reachy align: orange = training view", view)
+            key = cv2.waitKey(30) & 0xFF
+            if key in (ord("q"), 27):
+                break
+            if key == ord("b"):
+                blend = not blend
+            elif key in keys:
+                axis, delta = keys[key]
+                command = {**command, "head": {**command["head"], axis: command["head"][axis] + delta}}
+                daemon.goto(command, 0.3)
+            elif key == ord("a"):
+                status = "Auto: lining up (about 10 s)..."
+                status = auto()
+                last_measure = 0.0
+            elif key == ord("s"):
+                backup = POSE_FILE.with_name(POSE_FILE.stem + ".before-align.json")
+                if POSE_FILE.is_file() and not backup.exists():
+                    backup.write_text(POSE_FILE.read_text())
+                POSE_FILE.write_text(json.dumps(command, indent=2) + "\n")
+                pose = command
+                status = f"Saved to {POSE_FILE.name} (the old one: {backup.name})."
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+        with contextlib.suppress(OSError):
+            daemon.goto(pose, 0.8)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("command", choices=["save", "show", "try", "doa", "lock"])
+    parser.add_argument("command", choices=["save", "show", "try", "doa", "lock", "align"])
     args = parser.parse_args(argv)
     daemon = Daemon()
+    if args.command == "align":
+        align(daemon)
+        return
     if args.command == "doa":
         print("Speak from different sides. Ctrl+C stops. (0 = straight ahead, + = Reachy's left)")
         with contextlib.suppress(KeyboardInterrupt):

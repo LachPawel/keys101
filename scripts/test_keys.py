@@ -1659,3 +1659,25 @@ def test_reachy_turns_toward_speech_and_comes_back_for_the_arm(tmp_path: Path) -
     assert all(abs(h["yaw"] - 0.15) < 0.3 and (b is None or abs(b) < 1e-6) for h, b in quiet.targets)
     stop2.set()
     thread2.join(timeout=3)
+
+
+def test_align_measures_how_far_the_view_is_from_training() -> None:
+    import cv2
+    import keys_reachy
+
+    reference = cv2.imread(str(keys_reachy.REFERENCE))
+    assert reference is not None and reference.shape[:2] == (360, 640)
+    match = keys_reachy.ViewMatch(reference)
+    same = match.measure(reference)
+    assert same is not None and abs(same["dx"]) < 1 and abs(same["turn"]) < 0.2 and abs(same["scale"] - 1) < 0.01
+    assert keys_reachy.advice(same) == ["Lined up with training. Press S to save this pose."]
+
+    shifted = cv2.warpAffine(reference, np.float32([[1, 0, 20], [0, 1, -10]]), (640, 360))
+    moved = match.measure(shifted)
+    assert moved is not None and abs(moved["dx"] + 20) < 2 and abs(moved["dy"] - 10) < 2
+    assert "Press A" in keys_reachy.advice(moved)[-1]
+
+    smaller = cv2.warpAffine(reference, cv2.getRotationMatrix2D((320, 180), 0, 0.85), (640, 360))
+    assert "move it closer" in keys_reachy.advice(match.measure(smaller))[0]
+    assert "by hand" in keys_reachy.advice(match.measure(np.zeros_like(reference)))[0]
+    assert keys_reachy.solve3([[2, 0, 0], [0, 3, 0], [0, 0, 4]], [2, 3, 4]) == [1.0, 1.0, 1.0]
