@@ -14,6 +14,9 @@ the microphone array in its head says where speech comes from (the booth's sound
     uv run --with-requirements scripts/requirements-keys.txt scripts/keys_reachy.py lock   # back to the saved pose
     uv run --with-requirements scripts/requirements-keys.txt scripts/keys_reachy.py align  # match the training view
 
+`align --hand` does the same with the motors off: you hold the head, S saves where you hold it; then
+`hold` turns the motors back on and finds the command that keeps the head there despite its weight.
+
 `align` opens a window with Reachy's camera and the training view's outlines on top (orange), and says what
 to move so the keyboard and the arm sit where they did in training. The head can fix a small turn or tilt
 by itself (press A); a keyboard that is closer, farther or turned has to be moved by hand. S saves the head
@@ -193,8 +196,9 @@ def aim(pose: dict[str, Any], yaw: float) -> tuple[float, float, float]:
 
 
 def near(now: dict[str, Any], pose: dict[str, Any]) -> bool:
-    """Whether the head (and body) are back on the saved pose, close enough for the policy's camera."""
-    a, b = now["head"], pose["head"]
+    """Whether the head (and body) are back on the saved pose, close enough for the policy's camera. A pose
+    saved by hand keeps where it was held (`held`) next to the command that settles there (`head`)."""
+    a, b = now["head"], pose.get("held") or pose["head"]
     if any(abs(wrap(float(a[k]) - float(b[k]))) > NEAR_RAD for k in ("roll", "pitch", "yaw")):
         return False
     if any(abs(float(a[k]) - float(b[k])) > NEAR_M for k in ("x", "y", "z")):
@@ -524,8 +528,14 @@ PROBE_RAD = 0.06  # how far each axis is moved to learn how the picture moves wi
 STEP_MAX = 0.15  # the most one correction moves an axis
 
 
-def align(daemon: Daemon | None = None) -> None:
-    """The interactive window: Reachy's view with the training outlines, advice, and head fine-tuning."""
+def matched(m: dict[str, float] | None) -> bool:
+    """Close enough to the training view to save."""
+    return m is not None and abs(m["dx"]) < 6 and abs(m["dy"]) < 6 and abs(m["turn"]) < 1 and abs(m["scale"] - 1) < 0.04
+
+
+def align(daemon: Daemon | None = None, by_hand: bool = False) -> None:
+    """The interactive window: Reachy's view with the training outlines, advice, and head fine-tuning.
+    `by_hand`: the motors are off and you hold the head; nothing is moved, S saves where you hold it."""
     import cv2
     import numpy as np
 
@@ -547,8 +557,12 @@ def align(daemon: Daemon | None = None) -> None:
     if not cap.isOpened():
         raise SystemExit("Reachy's camera did not open (is the teacher running? It uses the camera too).")
     command = {**pose, "head": {k: float(v) for k, v in pose["head"].items()}}
-    daemon.goto(command, travel_s(daemon.pose(), command))
-    blend, status = False, "J/L turn, I/K tilt, U/O roll, A auto, B blend, S save, Q quit"
+    if by_hand:
+        status = "Motors off: hold the head where the outlines match. S saves where you hold it, Q quits."
+    else:
+        daemon.goto(command, travel_s(daemon.pose(), command))
+        status = "J/L turn, I/K tilt, U/O roll, A auto, B blend, S save, Q quit"
+    blend, was_matched = False, False
 
     def grab() -> Any:
         frame = None
@@ -611,6 +625,13 @@ def align(daemon: Daemon | None = None) -> None:
             if measured is not None:
                 lines.insert(0, f"off by {measured['dx']:+.0f}, {measured['dy']:+.0f} px, turned {measured['turn']:+.1f} deg, "
                                 f"size x{measured['scale']:.2f}  ({measured['inliers']} matches)")  # fmt: skip
+            if matched(measured) != was_matched:
+                was_matched = matched(measured)
+                print("MATCHED: hold still" if was_matched else "not matched", flush=True)
+            if was_matched:
+                cv2.rectangle(view, (0, 0), (view.shape[1] - 1, view.shape[0] - 1), (80, 200, 80), 14)
+                cv2.putText(view, "MATCHED", (view.shape[1] // 2 - 150, view.shape[0] - 40),
+                            cv2.FONT_HERSHEY_SIMPLEX, 2.0, (80, 200, 80), 5, cv2.LINE_AA)  # fmt: skip
             for n, text in enumerate(lines):
                 y = 34 + 32 * n
                 cv2.putText(view, text, (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 4, cv2.LINE_AA)
@@ -621,6 +642,8 @@ def align(daemon: Daemon | None = None) -> None:
                 break
             if key == ord("b"):
                 blend = not blend
+            elif by_hand and key in (*keys, ord("a")):
+                status = "Motors off: move the head by hand."
             elif key in keys:
                 axis, delta = keys[key]
                 command = {**command, "head": {**command["head"], axis: command["head"][axis] + delta}}
@@ -630,6 +653,9 @@ def align(daemon: Daemon | None = None) -> None:
                 status = auto()
                 last_measure = 0.0
             elif key == ord("s"):
+                if by_hand:  # exactly where it is held; run `keys_reachy.py hold` after, for the sag
+                    command = daemon.pose()
+                    print("Saved the held pose:", json.dumps(command["head"]), flush=True)
                 backup = POSE_FILE.with_name(POSE_FILE.stem + ".before-align.json")
                 if POSE_FILE.is_file() and not backup.exists():
                     backup.write_text(POSE_FILE.read_text())
@@ -639,19 +665,61 @@ def align(daemon: Daemon | None = None) -> None:
     finally:
         cap.release()
         cv2.destroyAllWindows()
-        with contextlib.suppress(OSError):
-            daemon.goto(pose, 0.8)
+        if not by_hand:
+            with contextlib.suppress(OSError):
+                daemon.goto(pose, 0.8)
+
+
+def hold(daemon: Daemon | None = None, tries: int = 5) -> float:
+    """Make the head stay where it was held. Under its own weight it droops a few degrees from wherever it
+    is told to go, so find the command that settles on the held pose and save it as `head`, keeping the
+    held pose as `held`. Turns the motors on first (gently, from where the head is). Returns how far off
+    (radians, the worst of roll, pitch and yaw) the head settles in the end."""
+    daemon = daemon or Daemon()
+    pose = load()
+    if pose is None:
+        raise SystemExit(f"Save a pose first ({POSE_FILE})")
+    held = dict(pose.get("held") or pose["head"])
+    now = daemon.pose()
+    daemon.target(now["head"], now["antennas"], now.get("body_yaw"))
+    daemon.call("POST", "/api/motors/set_mode/enabled")
+    command = {**pose, "head": dict(held)}
+    axes = ("roll", "pitch", "yaw")
+    best: tuple[float, dict[str, Any]] | None = None
+    for attempt in range(tries + 1):
+        daemon.goto(command, 1.0 if attempt == 0 else 0.6)
+        time.sleep(2.0 if attempt == 0 else 1.4)
+        settled = daemon.pose()["head"]
+        error = {a: float(held[a]) - float(settled[a]) for a in axes}
+        worst = max(abs(v) for v in error.values())
+        print(f"  off by {math.degrees(worst):.1f} degrees")
+        if best is None or worst < best[0]:
+            best = (worst, {**command, "head": dict(command["head"])})
+        if worst < 0.015:
+            break
+        command = {**command, "head": {**command["head"], **{a: command["head"][a] + 0.7 * error[a] for a in axes}}}
+    assert best is not None
+    saved = {**best[1], "held": held}
+    POSE_FILE.write_text(json.dumps(saved, indent=2) + "\n")
+    daemon.goto(saved, 0.6)
+    return best[0]
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("command", choices=["save", "show", "try", "doa", "lock", "align"])
+    parser.add_argument("command", choices=["save", "show", "try", "doa", "lock", "align", "hold"])
+    parser.add_argument("--hand", action="store_true", help="align with the motors off: you hold the head")
     args = parser.parse_args(argv)
     daemon = Daemon()
     if args.command == "align":
-        align(daemon)
+        align(daemon, by_hand=args.hand)
+        return
+    if args.command == "hold":
+        print("Motors on; the head settles on the held pose. Hands off.")
+        worst = hold(daemon)
+        print(f"Saved. The head settles within {math.degrees(worst):.1f} degrees of where you held it.")
         return
     if args.command == "doa":
         print("Speak from different sides. Ctrl+C stops. (0 = straight ahead, + = Reachy's left)")
