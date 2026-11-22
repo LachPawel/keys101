@@ -220,11 +220,15 @@ def play_when_asked(ears: kc.Ears, state: kc.State, wrong_first: int | None = No
 
 def test_learn_mode_needs_two_clean_runs_and_replays_a_mistake() -> None:
     coach, ears, state = make_coach(passes=2, hesitate_s=0.05)
+    said: list[str] = []
+    coach.voice = said.append  # what Reachy would say out loud during the lesson
     coach.start("learn", "tiny")
     wait_for(lambda: state.get("mode") == "learn")
     play_when_asked(ears, state, wrong_first=62)
     wait_for(lambda: state.get("mode") == "", timeout=15)
     assert state.get("big").startswith("You can play Tiny")
+    assert "That was D sharp. We want D: the arm plays it again so you hear it. Then you." in said
+    assert said[0].startswith("Phrase 1. Follow the arm") and "Well played." in said
     whos = [p["who"] for p in state.get("presses")]
     assert "arm" in whos  # the arm played D4 after the wrong key
     s = state.get("score")

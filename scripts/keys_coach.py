@@ -165,6 +165,7 @@ class Song:
 
 
 SONG_MODES = ("learn", "listen", "watch", "together", "sing")  # the modes that need a song; a jam needs none
+POLICY_PATIENCE_S = 5.0  # the policy gets this long to sound a key before the taught pose plays it
 SING_S = 2.6  # how long you sing a note for
 SING_NOTES = 4  # a Sing round is this many notes
 SING_OK_CENTS = 40.0  # in tune: within this of the note, in any octave (the voice teacher's own limit)
@@ -851,7 +852,10 @@ class PolicyArm:
         self.ears.expect(midi, 60.0 if self.first else 12.0)
         self.tell(f"/subtask {self.task(midi)}")
         self.tell("/start")
-        deadline = time.monotonic() + (60.0 if self.first else 12.0)
+        # In the app the policy gets a few seconds; then the taught pose plays the note, so a song never
+        # stalls on one key. The scorer (any_note) waits the full time: there a miss must stay a miss.
+        patience = 12.0 if any_note or not self.board.reaches(midi) else POLICY_PATIENCE_S
+        deadline = time.monotonic() + (60.0 if self.first else patience)
         self.first = False
         seen = self.state.press_id
         sounded = lifted = False
@@ -880,6 +884,22 @@ class PolicyArm:
                 self.tell(f"/goto {above} 0.25")
                 lifted = True
                 time.sleep(0.3)
+            elif not sounded and not any_note and self.prompts != "flow" and self.board.reaches(midi):
+                # The policy did not find the key in time: play it from the taught pose, and say so in the log.
+                print(
+                    f"The policy did not sound {midi_name(midi)} in time: played from the taught pose.",
+                    flush=True,
+                )
+                keys = self.board.keys[midi]
+                slower = 2.0 if is_black(midi) else 1.0
+                for pose, seconds in (
+                    (keys["above"], 0.4),
+                    (keys["down"], self.speeds.down * slower + self.speeds.hold),
+                    (keys["above"], 0.15 * slower),
+                ):
+                    self.tell(f"/goto {json.dumps(pose, separators=(',', ':'))} {seconds:.2f}")
+                    time.sleep(seconds + 0.08)
+                lifted = True
             else:
                 # A policy trained on keys_scripted.py's presses lifts off the key by itself: give it the time.
                 time.sleep(self.keys_play.HOLD_S if self.prompts == "flow" else 0.7)
@@ -1219,8 +1239,11 @@ class Coach:
                     self.say(
                         f"Phrase {p_index + 1} of {total}", "Follow the arm: press the key it points at."
                     )
+                    if tries == 1:
+                        self.speak(f"Phrase {p_index + 1}. Follow the arm, and press the key it points at.")
                 else:
                     self.say("Now mostly on your own", "The arm only helps if you wait.")
+                    self.speak("Now on your own. The arm only helps if you wait.")
                 self.pause(0.8)
                 mistakes = 0
                 for i, note in enumerate(phrase.notes):
@@ -1237,6 +1260,7 @@ class Coach:
                             self.arm.point(note)
                             pointed = True
                             self.say("Here", f"{midi_name(note)}: the key under the arm.")
+                            self.speak(f"It is {spoken_note(note)}, the key under the arm.")
                             continue
                         if press.midi == note:
                             self.state.judge(press.id, True)
@@ -1246,6 +1270,11 @@ class Coach:
                         self.mark(notes, i, "miss")
                         self.wrong(press)
                         self.say("Not that one", f"Listen: this is {midi_name(note)}. Now you.", "miss")
+                        # Reachy says what went wrong, and why the arm plays the note again
+                        self.speak(
+                            f"That was {spoken_note(press.midi)}. We want {spoken_note(note)}: "
+                            "the arm plays it again so you hear it. Then you."
+                        )
                         self.state.john(note)
                         self.arm_plays(note)
                         self.mark(notes, i, "now")
@@ -1256,9 +1285,14 @@ class Coach:
                     self.say(
                         "Almost", f"{mistakes} wrong key{'s' if mistakes > 1 else ''}. Once more.", "miss"
                     )
+                    self.speak(
+                        f"Almost: {mistakes} wrong key{'s' if mistakes > 1 else ''}. "
+                        "Once more from the start of the phrase."
+                    )
                 else:
                     clean += 1
                     self.say("Clean", "Again, without help." if clean < passes else "Well played.", "ok")
+                    self.speak("Clean! Again, without help." if clean < passes else "Well played.")
                 self.pause(1.2)
             self.arm.away()
         if only is None:
@@ -1283,6 +1317,7 @@ class Coach:
                 self.arm.away()
                 self.ears.flush()
                 self.say("Your turn", "Play it back.")
+                self.speak("Your turn. Play it back.")
                 right = 0
                 for i, note in enumerate(phrase.notes):
                     self.mark(notes, i, "now")
@@ -1298,9 +1333,14 @@ class Coach:
                         self.wrong(press)
                 if right == len(phrase.notes):
                     self.say("Perfect", "Next phrase.", "ok")
+                    self.speak("Perfect.")
                     self.pause(1.2)
                     break
                 self.say(f"{right} of {len(phrase.notes)}", "Watch it again.", "miss")
+                self.speak(
+                    f"{right} of {len(phrase.notes)} right. The arm plays the phrase again: "
+                    "watch where it goes wrong for you."
+                )
                 self.pause(1.5)
         self.say("Song done", f"{song.title}, phrase by phrase.", "ok")
 
@@ -1463,6 +1503,7 @@ class Coach:
         upcoming = [self.arm.board.snap(a) if a is not None else None for _, _, a in arm_notes]
         first = next((n for n in upcoming if n is not None), None)
         self.say("Play together", "Start when you are ready. You lead, the arm follows.")
+        self.speak("Start when you are ready. You lead, and I follow with the bass.")
         if first is not None:
             self.arm.point(first)
         k = 0  # index into arm_notes
