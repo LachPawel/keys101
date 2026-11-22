@@ -29,7 +29,7 @@ def test_note_names_round_trip() -> None:
 
 
 def test_every_lesson_loads_and_fits_the_keyboard() -> None:
-    songs = kc.load_songs()
+    songs = kc.load_songs(local=False)
     assert {"ode", "mary", "twinkle", "canon", "fur_elise"} <= songs.keys()
     for song in songs.values():
         info = song.info()
@@ -116,7 +116,7 @@ def test_twelve_sticker_layout(tmp_path) -> None:
     # The repository's own layout is the twelve Keys101 keys, and every bass note of every lesson is in it.
     assert keys_scripted.read_layout() == names
     learned = set(kc.read_stickers().values())
-    for song in kc.load_songs().values():
+    for song in kc.load_songs(local=False).values():
         for phrase in song.phrases:
             for bar in phrase.bars:
                 assert bar.arm is None or bar.arm in learned or song.name == "fur_elise", song.name
@@ -321,7 +321,7 @@ def test_streak_counts_days_in_a_row() -> None:
 
 
 def test_the_real_course_is_playable() -> None:
-    songs = kc.load_songs()
+    songs = kc.load_songs(local=False)
     ids = [lesson["id"] for lesson in kc.COURSE]
     assert len(ids) == len(set(ids))
     for lesson in kc.COURSE:
@@ -414,3 +414,16 @@ def test_listen_mode_the_arm_plays_the_whole_song_alone() -> None:
     arm_notes = [p["midi"] for p in state.get("presses") if p["who"] == "arm"]
     assert arm_notes == [60, 62, 64], "every note of the tune, in order, by the arm alone"
     assert [n["status"] for n in state.get("notes")] == ["arm"] * 3
+
+
+def test_sing_mode_judges_each_note_in_cents() -> None:
+    coach, _ears, state = make_coach()
+    answers = iter([-80.0, 12.0, None, 5.0, 30.0])  # flat then in tune; not heard then in tune; in tune
+    coach.hear_sung = lambda midi, seconds=0.0: next(answers)  # no microphone in a test
+    coach.pause = lambda seconds: None if not coach.ears.stop.is_set() else (_ for _ in ()).throw(kc.Stopped)
+    coach.start("sing", "tiny")
+    wait_for(lambda: state.get("big") == "Sung", timeout=10)
+    assert state.get("small") == "3 of 3 notes in tune."
+    assert [n["status"] for n in state.get("notes")] == ["ok"] * 3
+    arm_notes = [p["midi"] for p in state.get("presses") if p["who"] == "arm"]
+    assert arm_notes == [60, 60, 62, 62, 64], "a missed note is played again before the second try"

@@ -37,7 +37,7 @@ COMMAND = Path(__file__).resolve().parent.parent / "outputs" / "reachy_keys_comm
 
 
 class Head:
-    def __init__(self, arm: Any, spoken: Callable[[], str] = lambda: "") -> None:
+    def __init__(self, arm: Any, spoken: Callable[[], str] = lambda: "", alive: bool = True) -> None:
         import keys_reachy
 
         self.kr = keys_reachy
@@ -49,6 +49,8 @@ class Head:
         self.ok = keys_reachy.load() is not None
         if not self.ok:
             print(f"Reachy's head stays still: no saved pose ({keys_reachy.POSE_FILE}).", flush=True)
+            return
+        if not alive:  # only to_keys() is wanted: the head is brought to the piano and left there
             return
         threading.Thread(
             target=keys_reachy.follow, args=(self, self.stop), kwargs={"look": True}, daemon=True

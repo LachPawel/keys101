@@ -53,6 +53,7 @@ MODE_WORDS = {
     "together": ("together", "duet", "with me", "bass", "band", "accompany"),
     "listen": ("listen", "for me", "yourself", "itself", "on its own", "alone", "solo", "perform"),
     "watch": ("repeat", "play it back", "watch", "show me"),
+    "sing": ("sing", "singing", "my voice", "pitch", "ear training"),
     "learn": ("learn", "learning", "teach", "practise", "practice"),
 }
 TUNE_WORDS = ("make up", "made up", "making up", "invent", "compose", "new song", "new tune", "new melody",
@@ -79,6 +80,7 @@ What the two of you can do:
 - Repeat: the arm plays a phrase and they play it back.
 - Together: they play the tune and the arm is their bass player. This is the band.
 - Jam: they play any short phrase and the arm answers it.
+- Sing: the arm plays a note, they sing it back, and a pitch tracker says how many cents off they were.
 - A tune you make up on the spot, which the arm then teaches.
 
 Work out what they want. They should never need magic words.
@@ -87,6 +89,7 @@ Work out what they want. They should never need magic words.
 - Has played before: Ode to Joy, or playing together.
 - Wants a band, a duet, a bass player, company: together.
 - Wants to improvise or show off: a jam.
+- Wants to sing, train their ear or check their pitch: sing, with a song they know.
 - Bored, wants a surprise or something new: a tune you make up.
 - Wants to hear something, "play something for me", "show me what you can do": the arm plays a song \
 by itself. Offer a song or two; if they say you choose, choose one and play it.
@@ -97,7 +100,7 @@ it. After the note, do exactly one of two things:
 1. It is clear what to start: announce it in one short, sure sentence that names exactly one thing (a \
 song by its title), for example \
 "Lesson one, here we go!", "Sit back, the arm plays Ode to Joy on its own!", "Ode to Joy together, I \
-bring the bass!", "A jam it is!", "I'll make up a tune and teach it to you!". No question and no second option in that sentence. It starts the moment you finish, so then \
+bring the bass!", "Let's sing the notes of Mary Had a Little Lamb!", "A jam it is!", "I'll make up a tune and teach it to you!". No question and no second option in that sentence. It starts the moment you finish, so then \
 you stay quiet.
 2. It is not clear yet: ask or suggest, in a sentence with a question mark.
 
@@ -119,7 +122,7 @@ def brief(course: list[dict[str, Any]]) -> str:
     return (
         f"Private note, never read it aloud. {where} If you know what they want, announce it now in one "
         "short sentence naming exactly one thing: a lesson by its number, the next lesson, a song the "
-        "arm plays on its own, a song to learn, repeat or play together, a jam, a tune you make up, or "
+        "arm plays on its own, a song to learn, repeat, sing or play together, a jam, a tune you make up, or "
         "stopping. Otherwise ask them, "
         "with a question mark."
     )
@@ -162,7 +165,7 @@ def parse(text: str, course: list[dict[str, Any]], songs: dict[str, Any]) -> tup
     song = next((name for name, keys in SONG_WORDS.items() if name in songs and has(keys)), None)
     mode = next((m for m, keys in MODE_WORDS.items() if has(keys)), None)
     if has(TUNE_WORDS):
-        return ("tune", mode if mode in ("listen", "watch", "together") else "learn")
+        return ("tune", mode if mode in ("listen", "watch", "together", "sing") else "learn")
     number = next((NUMBER[w] for w in words if w in NUMBER), None)
     if number is not None and "lesson" in words:
         index = len(course) - 1 if number == -1 else number - 1

@@ -1,8 +1,0 @@
-title: Alors on danse (chords)
-about: The chords only, moved to the white keys: A minor, F, G, A minor. You play them broken, the arm plays the bass.
-level: 2
-# No melody here: only the harmony. If your ear wants another order, change the letters below.
-you: A4 E4 C4 E4 | F4 A4 C4 A4 | G4 D4 G4 D4 | A4 E4 C4 E4
-arm: A3          | F3          | G3          | A3
-you: A4 E4 C4 E4 | F4 A4 C4 A4 | G4 D4 G4 D4 | A4 E4 A4
-arm: A3          | F3          | G3          | A3

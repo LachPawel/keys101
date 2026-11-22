@@ -1,26 +1,67 @@
 # Keys101
 
-An SO-101 robot arm that teaches you a song on a MIDI keyboard, then plays it with you. Built at HackLab #2
-in Berlin (November 2026) on top of the SO-101 Piano Teacher below.
+An SO-101 robot arm teaches you a song on a small MIDI keyboard, then plays it with you. A Reachy Mini is
+the teacher you talk to: it works out what you want, and its head camera is the arm's only eye. Built at
+HackLab #2 in Berlin (22 November 2026) on top of the SO-101 Piano Teacher below.
 
-- **Learn:** the arm hovers over the next key and waits for you. Press a wrong key and it plays the right
-  one, while John (a singing 3D head) sings its name.
-- **Watch and repeat:** the arm plays a phrase, you play it back. MIDI checks every note.
-- **Play together:** you play your part, the arm plays its part with you. You lead, it follows.
-- **Jam:** play a short phrase and stop. The arm answers it, echoed or upside down.
-- **Your course:** seven short lessons in order, from three notes to a duet. Three hearts per lesson, XP for
-  each one you finish, and the next lesson opens when the last is done.
+![The roadmap: seven lessons, then free play](docs/roadmap.png)
+
+![A lesson: the arm points at the next key and waits for you](docs/lesson.png)
+
+## What you can do
+
+- **Lessons:** seven short ones in order, from three notes to a duet. Three hearts per lesson, XP for each
+  one you finish.
+- **Listen:** the arm plays a whole song by itself.
+- **Learn:** the arm hovers over the next key and waits. Press a wrong key and it plays the right one, while
+  John (a singing 3D head) sings its name.
+- **Repeat:** the arm plays a phrase, you play it back. MIDI checks every note.
+- **Together:** you play the tune, the arm is your bass player. You lead, it follows.
+- **Sing:** the arm plays a note, you sing it back, and SwiftF0 says how many cents off you were.
+- **Jam:** play a short phrase and stop. The arm answers it.
+- **New tune:** Reachy makes up four bars from the keys the arm knows, and the arm teaches them.
+
+You can click, or just talk: "can you play something for me?", "I need a bass player", "you choose".
+Reachy speaks through GPT-Live, hears you through ai-coustics Voice Focus, looks at whoever speaks, and
+turns back to the keys before the arm plays.
+
+## How it is built
+
+- **The arm's brain:** SmolVLA with the vision encoder unfrozen, trained on a dataset the arm recorded by
+  itself: it pressed sticker keys from poses taught once, and MIDI checked and labelled every press
+  ("press E3"). No leader arm, no teleoperation. See [RECORDING.md](RECORDING.md).
+- **Camera only against camera and ears:** the same episodes trained two policies. One sees Reachy's
+  camera; the other also gets the keyboard's sound drawn as a spectrogram, as a second camera.
+- **Scored by MIDI:** every press is judged by the keyboard itself, so the numbers below needed no human.
+
+| Policy | Keys | Right key first |
+| --- | --- | --- |
+| Camera only | 12 white | 59 of 60 |
+| Camera and ears | 12 white | 54 of 60 |
+| Camera and ears, all keys | 12 white, 10 black | 17 of 22 |
+
+The 22-key policy had 160 good black-key episodes against 595 white ones, and black keys are narrow.
+
+## Run it
 
 ```bash
 R="uv run --with-requirements scripts/requirements-keys.txt"
-$R scripts/keys_coach.py --arm sim                  # no robot: try it in the browser
-$R scripts/keys_coach.py teach --corners            # teach the arm three keys, the rest are filled in
-$R scripts/keys_coach.py --arm scripted             # the real arm, from taught poses
-$R scripts/keys_coach.py --arm policy               # SmolVLA presses its six keys, taught poses do the rest
+$R scripts/keys_coach.py --arm sim                              # no robot: try it in the browser
+$R scripts/keys_coach.py --arm scripted                         # the real arm, from taught poses
+$R scripts/keys_coach.py --arm policy                           # SmolVLA presses the keys
+$R --with aic-sdk==3.3.2 scripts/keys_coach.py --arm policy --voice   # and Reachy talks and looks around
 ```
 
-Then open http://localhost:8780. Songs are plain text files in [`scripts/lessons`](scripts/lessons). The
-code is [`scripts/keys_coach.py`](scripts/keys_coach.py) and the page is [`web/coach.html`](web/coach.html).
+Then open http://localhost:8780. `--voice` needs `OPENAI_API_KEY` and an ai-coustics licence in `.env`.
+Songs are plain text files in [`scripts/lessons`](scripts/lessons); your own go in `scripts/lessons/local/`.
+
+| File | What it does |
+| --- | --- |
+| [`scripts/keys_coach.py`](scripts/keys_coach.py) | The app: lessons, modes, the scorer, the web server |
+| [`scripts/keys_guide.py`](scripts/keys_guide.py) | Reachy's conversation: GPT-Live, Voice Focus, and what to start |
+| [`scripts/keys_head.py`](scripts/keys_head.py) | Reachy's head: alive on the roadmap, back on the keys for the policy |
+| [`scripts/keys_scripted.py`](scripts/keys_scripted.py) | Teaching poses and recording the dataset |
+| [`web/coach.html`](web/coach.html) | The page |
 
 # SO-101 Piano Teacher
 

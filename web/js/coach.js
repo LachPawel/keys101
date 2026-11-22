@@ -7,7 +7,7 @@
 const NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 // Computer keys for one octave and a bit from C4, like a tracker: A W S E D F T G Y H U J K.
 const COMPUTER = { a: 0, w: 1, s: 2, e: 3, d: 4, f: 5, t: 6, g: 7, y: 8, h: 9, u: 10, j: 11, k: 12, o: 13, l: 14 };
-const MODE_WORD = { listen: "Listen", learn: "Learn", watch: "Repeat", together: "Together", jam: "Jam" };
+const MODE_WORD = { sing: "Sing", listen: "Listen", learn: "Learn", watch: "Repeat", together: "Together", jam: "Jam" };
 
 export const isBlack = (midi) => NAMES[midi % 12].endsWith("#");
 export const noteName = (midi) => `${NAMES[midi % 12]}${Math.floor(midi / 12) - 1}`;
@@ -225,6 +225,11 @@ function showView(was, next) {
   }
   const view = next.mode || now < holdPlay ? "play" : "home";
   if (document.body.dataset.view !== view) {
+    if (!was) {
+      // The page was opened in the middle of a lesson: show the keyboard at once, no slide.
+      document.body.classList.add("instant");
+      setTimeout(() => document.body.classList.remove("instant"), 600);
+    }
     document.body.dataset.view = view;
     document.activeElement?.blur?.(); // a focused button of the screen that slides away must not pull the page
     for (const box of [document.scrollingElement, document.body, document.querySelector("main")]) box?.scrollTo?.(0, 0);
@@ -269,6 +274,17 @@ function render(next) {
   const s = next.score;
   const where = next.phrases ? `phrase ${next.phrase + 1} of ${next.phrases} · ` : "";
   $("score").innerHTML = s.right + s.wrong ? `${where}<b>${s.right}</b> right · <b>${s.wrong}</b> ${s.wrong === 1 ? "slip" : "slips"}` : "";
+
+  // Sing: where your voice sat, from 100 cents flat to 100 sharp.
+  $("meter").hidden = next.mode !== "sing";
+  const sung = next.sung;
+  $("meter-dot").hidden = !sung || sung.cents == null;
+  if (sung && sung.cents != null) {
+    const c = Math.max(-100, Math.min(100, sung.cents));
+    $("meter-dot").style.left = `${50 + c / 2}%`;
+    $("meter-dot").classList.toggle("ok", Math.abs(sung.cents) <= 40);
+    $("meter-text").textContent = `${sung.cents > 0 ? "+" : ""}${Math.round(sung.cents)} cents`;
+  } else $("meter-text").textContent = next.mode === "sing" ? (sung ? "not heard" : "sing and hold") : "";
 
   const reach = new Set(next.reach);
   const down = new Set(next.keys_down);
@@ -335,6 +351,7 @@ const john = (() => {
       } else if (now.mode !== was?.mode) {
         const text = {
           listen: "The arm plays. I hum along.",
+          sing: "I sing each note first. Then you.",
           learn: "Follow the arm. If you miss, I sing the right one.",
           watch: "Watch the arm, then play it back.",
           together: "You lead. The arm and I follow.",

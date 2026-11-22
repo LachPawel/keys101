@@ -17,3 +17,5 @@ dist/
 ears_check.png
 keys_midi.json
 keys_midi_sharps.json
+# Your own lesson files: songs you add for yourself
+scripts/lessons/local/
