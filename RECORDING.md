@@ -88,71 +88,51 @@ Each key must print its own note: 48, 50, 52, 53, 55, 57, then 60, 62, 64, 65, 6
 
 ## 6. Record (about 30 minutes)
 
-Stop the camera server first. Then:
+Stop the camera server first. A one-minute trial comes first, to see that the presses land at this speed:
 
 ```bash
-$R scripts/keys_scripted.py record --presses 600 --speed 100 --fast --jitter 2 --midi MicroLab --cameras scripts/keys_cameras_midi.json --repo-id PawelLach/so101-keys101-12keys
+$R scripts/keys_scripted.py record --presses 36 --speed 90 --fast --jitter 1 --max-step 25 --midi MicroLab --cameras scripts/keys_cameras_midi.json --repo-id PawelLach/so101-keys101-trial
+```
+
+"Presses that sounded their key: 36/36" (or close): go on to the real one.
+
+```bash
+$R scripts/keys_scripted.py record --presses 600 --speed 90 --fast --jitter 1 --max-step 25 --midi MicroLab --cameras scripts/keys_cameras_midi.json --repo-id PawelLach/so101-keys101-12keys
 ```
 
 - One episode per press, about 50 per key, labelled with the note: "press C3", "press E4". Each starts where
   the last press ended. The order is a tour that makes every jump between two keys equally often, bass to
   melody included.
-- `--speed 100 --fast` records quick, snappy presses, so the policy learns to be quick. `--jitter 2` and the
-  built-in timing changes make every press a little different.
-- For about a third of the episodes, rest a hand on unused keys (B3, or the two at the far right) without
-  pressing. In Keys101 your hands are on the keyboard while the arm plays. Never press a key while it records:
-  the ears and the press check would hear it.
-- Every line should end in `ok`. Many `WRONG` or `NO NOTE`: Ctrl+C, re-teach that key, start again.
+- `--speed 90 --fast` records quick presses, so the policy learns to be quick. Long jumps rise in an arc and
+  the arm stops for a moment above the key before pressing: without that it dragged over the keys and hit
+  neighbours. `--max-step 25` lets the motors keep up with the plan.
+- Hands on the keyboard are fine, and in Keys101 they are there anyway. Hold the keyboard still if it is not
+  taped down. Never press a key while it records: the ears and the press check would hear it.
+- A line that ends in `WRONG` or `NO NOTE` is a press that missed. A few are fine: they are dropped before
+  training. Many: Ctrl+C, re-teach that key, start again.
 - Ctrl+C keeps every finished episode. The last lines print the folder, `outputs/keys_scripted/<stamp>`.
 - If it hangs while disconnecting the ears camera, close the tab: nothing is lost.
 
-## 7. Push the dataset, with and without ears (private)
+## 7. Push and train both models (one command, about 2 hours, about $5 each)
 
-Put the folder name from the end of the recording in `STAMP`:
-
-```bash
-STAMP=20261122_101500
-```
-
-The recording as it is, camera and ears:
+With the folder name the recorder printed:
 
 ```bash
-uv run python -c "from lerobot.datasets.lerobot_dataset import LeRobotDataset as D; D('PawelLach/so101-keys101-12keys', root='outputs/keys_scripted/$STAMP').push_to_hub(private=True)"
+scripts/keys101_train.sh 20261122_104500
 ```
 
-A copy without the ears, camera only:
-
-```bash
-uv run python -c "
-from lerobot.datasets.dataset_tools import remove_feature
-from lerobot.datasets.lerobot_dataset import LeRobotDataset as D
-remove_feature(D('PawelLach/so101-keys101-12keys', root='outputs/keys_scripted/$STAMP'), 'observation.images.ears', output_dir='outputs/keys_scripted/${STAMP}_camera_only', repo_id='PawelLach/so101-keys101-12keys-camera-only')
-D('PawelLach/so101-keys101-12keys-camera-only', root='outputs/keys_scripted/${STAMP}_camera_only').push_to_hub(private=True)"
-```
-
-## 8. Train both, in parallel (about 2 hours, about $5 each)
-
-From the SmolVLA base with the vision encoder unfrozen, on an A100 on Hugging Face Jobs. Each command returns
-at once and runs in the cloud. A checkpoint goes to its private model repo every 2,000 steps.
-
-Camera and ears:
-
-```bash
-uv run lerobot-train --policy.path=lerobot/smolvla_base --dataset.repo_id=PawelLach/so101-keys101-12keys --policy.freeze_vision_encoder=false --policy.train_expert_only=false --dataset.image_transforms.enable=true --dataset.eval_split=0.1 --eval_steps=1000 --rename_map='{"observation.images.front": "observation.images.camera1", "observation.images.ears": "observation.images.camera2"}' --batch_size=64 --steps=6000 --save_freq=2000 --policy.repo_id=PawelLach/smolvla-keys101 --policy.private=true --save_checkpoint_to_hub=true --job.target=a100-large --job.timeout=3h --job.detach=true
-```
-
-Camera only:
-
-```bash
-uv run lerobot-train --policy.path=lerobot/smolvla_base --dataset.repo_id=PawelLach/so101-keys101-12keys-camera-only --policy.freeze_vision_encoder=false --policy.train_expert_only=false --dataset.image_transforms.enable=true --dataset.eval_split=0.1 --eval_steps=1000 --rename_map='{"observation.images.front": "observation.images.camera1"}' --batch_size=64 --steps=6000 --save_freq=2000 --policy.repo_id=PawelLach/smolvla-keys101-camera-only --policy.private=true --save_checkpoint_to_hub=true --job.target=a100-large --job.timeout=3h --job.detach=true
-```
+It drops the episodes whose press missed, makes a second copy of the dataset without the ears (camera only),
+pushes both to your Hugging Face account as private datasets, and starts two cloud trainings on an A100:
+`PawelLach/smolvla-keys101` (camera and ears) and `PawelLach/smolvla-keys101-camera-only`. Both start from the
+SmolVLA base with the vision encoder unfrozen, 6,000 steps, a checkpoint every 2,000 steps.
+`DRY=1 scripts/keys101_train.sh <stamp>` builds the datasets without uploading or training.
 
 Do not use `scripts/keys_flow_train.sh` for this: it pushes to the `flow` policy's repo, the public one.
 
 While they train, leave the rig exactly as it is. The 4,000-step checkpoint (about 80 minutes in) is worth a
 first try.
 
-## 9. Use them in Keys101
+## 8. Use them in Keys101
 
 Download a checkpoint of each and link it where Keys101 looks for the models `keys101` and `keys101-cam`:
 

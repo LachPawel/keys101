@@ -97,6 +97,12 @@ class Timing:
     settle: float = 0.5  # still above the key, so the policy learns to stop
     vary: float = 0.2  # travel and press durations change by up to this fraction
     jitter: float = 1.5  # degrees of random offset on the above pose (never on the press itself)
+    # Long jumps across the keyboard. arc: the travel rises this many degrees (shoulder lift) per degree the
+    # base turns, up to arc_max, so the tip never drags over the keys on its way. arrive: seconds the arm
+    # waits above the key before pressing, so it has really stopped moving sideways. Both 0: as before.
+    arc: float = 0.0
+    arc_max: float = 14.0
+    arrive: float = 0.0
 
 
 @dataclass
@@ -147,8 +153,18 @@ def press_segments(
         for k, v in poses[f"above_{key}"].items()
     }
     down = poses[f"down_{key}"]
+    travel = Segment(start, above, vary(travel_time(start, above, timing.speed, timing.min_travel)))
+    if timing.arc:
+        turn = abs(above["shoulder_pan.pos"] - start["shoulder_pan.pos"])
+        rise = min(timing.arc_max, timing.arc * turn)
+        # Up is the negative direction of the shoulder lift on this arm (above poses sit below down poses).
+        travel.via = {
+            k: (start[k] + above[k]) / 2 - (rise if k == "shoulder_lift.pos" else 0.0) for k in above
+        }
+        travel.duration += 2 * rise / timing.speed
     return [
-        Segment(start, above, vary(travel_time(start, above, timing.speed, timing.min_travel))),
+        travel,
+        *([Segment(above, above, timing.arrive)] if timing.arrive else []),
         Segment(above, down, vary(timing.press)),
         Segment(down, down, timing.hold),
         Segment(down, above, vary(timing.press)),
@@ -287,6 +303,8 @@ def judge_press(key: int, notes: list[int] | None, key_notes: dict[int, int]) ->
         return None, f"heard {notes}"
     if notes == [key_notes[key]]:
         return True, "ok"
+    if set(notes) == {key_notes[key]}:  # the right key, bouncing: it sounded more than once
+        return True, f"ok (sounded {len(notes)} times)"
     return False, f"WRONG: heard {notes}, expected {key_notes[key]}"
 
 
@@ -363,6 +381,18 @@ def make_robot(args: argparse.Namespace, cameras: dict[str, dict]) -> Any:
     return SOFollower(config)
 
 
+def lowered(poses: dict[str, Pose], above: float) -> dict[str, Pose]:
+    """The poses with every `above` pose moved toward its `down` pose: `above` of the taught way up.
+    An above pose taught high makes a long, slow press; 0.5 halves it without teaching again."""
+    if above >= 1.0:
+        return poses
+    out = dict(poses)
+    for key in KEYS:
+        down, up = poses[f"down_{key}"], poses[f"above_{key}"]
+        out[f"above_{key}"] = {k: down[k] + above * (up[k] - down[k]) for k in up}
+    return out
+
+
 def load_poses(path: Path) -> dict[str, Pose]:
     if not path.exists():
         sys.exit(f"No {path}. Teach the poses first: uv run scripts/keys_scripted.py teach")
@@ -403,8 +433,10 @@ def teach(args: argparse.Namespace) -> None:
 
 
 def test(args: argparse.Namespace) -> None:
-    poses = load_poses(args.poses)
+    poses = lowered(load_poses(args.poses), args.above)
     timing = Timing(speed=args.speed, press=0.6, hold=0.5, settle=0.5, vary=0.0, jitter=0.0)
+    if len(KEYS) != 6:
+        timing.arc = 0.35
     rng = np.random.default_rng(0)
     t0 = time.perf_counter()
     midi = open_midi(args.midi, t0)
@@ -628,7 +660,7 @@ def record(args: argparse.Namespace) -> None:
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
     from lerobot.utils.feature_utils import build_dataset_frame, hw_to_dataset_features
 
-    poses = load_poses(args.poses)
+    poses = lowered(load_poses(args.poses), args.above)
     args.names = args.names or LAYOUT_NAMES or None
     if args.names and len(args.names) != len(KEYS):
         sys.exit(f"--names takes {len(KEYS)} note names, one per sticker, e.g. C3 D3 E3 F3 G3 A3")
@@ -654,6 +686,9 @@ def record(args: argparse.Namespace) -> None:
         timing = Timing(
             speed=args.speed, jitter=args.jitter, min_travel=0.4, press=0.18, hold=0.12, settle=0.3
         )
+    if len(KEYS) != 6 or args.arc is not None:  # a wide keyboard: arcs on long jumps, a stop before pressing
+        timing.arc = 0.35 if args.arc is None else args.arc
+        timing.arrive = args.arrive
     rng = np.random.default_rng(args.seed)
     cameras = load_json(args.cameras)
     robot = make_robot(args, cameras)
@@ -764,7 +799,10 @@ def record(args: argparse.Namespace) -> None:
                         "frame_start": first,
                         "frame_end": len(stamps),  # exclusive
                         "frame_go": go,  # the arm starts moving
-                        "frame_down": go + round((segments[0].duration + segments[1].duration) * args.fps),
+                        "frame_down": go
+                        + round(
+                            sum(seg.duration for seg in segments[: 3 if timing.arrive else 2]) * args.fps
+                        ),
                         "start": round(start, 4),
                         "end": round(end, 4),
                         "notes": notes,
@@ -820,6 +858,12 @@ def main() -> None:
     )
     common.add_argument(
         "--midi", default="auto", help="MIDI input: part of its name, auto (the first one) or none"
+    )
+    common.add_argument(
+        "--above",
+        type=float,
+        default=1.0,
+        help="test and record: hover this fraction of the taught way above each key (0.5: half as high)",
     )
     common.add_argument(
         "--key-notes", type=Path, default=Path("keys_midi.json"), help="MIDI note of each key, from `test`"
@@ -883,6 +927,14 @@ def main() -> None:
         "--jitter", type=float, default=Timing.jitter, help="Random offset of the above pose (deg)"
     )
     p.add_argument("--fast", action="store_true", help="Shorter presses and stops: a more reactive policy")
+    p.add_argument(
+        "--arc",
+        type=float,
+        help="Rise of a jump, degrees per degree the base turns (default 0.35 beyond 6 keys)",
+    )
+    p.add_argument(
+        "--arrive", type=float, default=0.2, help="Seconds above the key before pressing, with --arc"
+    )
     p.add_argument("--seed", type=int, help="Random seed for the variations")
     p.add_argument("--cameras", type=Path, default=DEFAULT_CAMERAS)
     p.add_argument("--repo-id", default="PawelLach/so101_keys_scripted")
