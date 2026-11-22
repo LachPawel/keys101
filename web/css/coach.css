@@ -51,9 +51,9 @@ body[data-view="play"] .home { opacity: 0; transform: translateX(-6%); pointer-e
 .instant .home, .instant .play, .instant .john { transition: none !important; }
 .home > *, .play > * { position: relative; z-index: 1; }
 
-/* John: large, half see-through, behind the words of both screens */
-.john { position: absolute; z-index: 0; right: calc(var(--gutter) - 8px); top: 16px; width: min(44vw, 600px); height: 54%; opacity: 0.5; mix-blend-mode: multiply; pointer-events: none; transition: opacity 380ms, right 380ms, top 380ms; }
-body[data-view="home"] .john { opacity: 0.32; top: 8px; }
+/* John: large and half see-through, on top of both screens. Clicks pass through him. */
+.john { position: absolute; z-index: 4; right: calc(var(--gutter) - 8px); top: 16px; width: min(44vw, 600px); height: 54%; opacity: 0.5; mix-blend-mode: multiply; pointer-events: none; transition: opacity 380ms, right 380ms, top 380ms; }
+body[data-view="home"] .john { top: 8px; }
 .john iframe { width: 100%; height: 100%; border: 0; background: transparent; }
 
 /* screen 1: the roadmap */
