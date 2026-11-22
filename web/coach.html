@@ -8,61 +8,79 @@
     <link rel="icon" href="img/logo.svg" />
     <link rel="stylesheet" href="css/coach.css" />
   </head>
-  <body>
+  <body data-view="home">
     <header class="top">
       <h1><img class="logo" src="img/logo.svg" alt="" width="28" height="28" />Keys101</h1>
       <div class="stats" aria-label="Your progress">
         <span class="hearts" id="hearts" aria-label="Hearts left"></span>
-        <span><b id="xp">0</b> XP</span>
-        <span><b id="days">0</b> day streak</span>
+        <span class="pill"><b id="xp">0</b> XP</span>
+        <span class="pill"><b id="days">0</b> day streak</span>
+        <span class="pill"><b id="done-count">0</b> of <span id="lesson-count">7</span> lessons</span>
       </div>
       <div class="chips">
-        <span class="chip" id="chip-sound">Click once for sound</span>
+        <span class="chip warn" id="chip-sound">Click once for sound</span>
         <span class="chip" id="chip-arm">Arm</span>
         <span class="chip" id="chip-midi">MIDI keyboard</span>
       </div>
     </header>
 
     <main>
-      <section class="say">
+      <!-- John, the singing head: large and half see-through behind both screens. -->
+      <div class="john" id="john" aria-hidden="true"><iframe id="john-frame" title="John, a 3D singing head (Chimera)" allow="autoplay" tabindex="-1"></iframe></div>
+
+      <!-- Screen 1: the roadmap. -->
+      <section class="home" id="home" aria-label="Your course">
+        <div class="home-head">
+          <p class="eyebrow">Your roadmap</p>
+          <p class="big" id="home-big">Learn a song with a robot</p>
+          <p class="small" id="home-small">Seven short lessons. The arm shows you each key, then plays with you.</p>
+          <p class="voice" id="voice" hidden><span class="voice-dot"></span><span id="voice-text">Say "Hi Reachy".</span></p>
+        </div>
+        <div class="road-wrap">
+          <svg class="road-line" id="road-line" aria-hidden="true"><path id="road-path" /><path id="road-done" /></svg>
+          <ol class="road" id="road"></ol>
+        </div>
+        <div class="free">
+          <p class="label">Or play freely</p>
+          <select id="song" aria-label="Song"></select>
+          <div class="modes">
+            <button type="button" data-mode="learn" title="The arm shows you each key">Learn</button>
+            <button type="button" data-mode="watch" title="The arm plays a phrase, you play it back">Repeat</button>
+            <button type="button" data-mode="together" title="You lead, the arm plays the bass">Together</button>
+            <button type="button" data-mode="jam" title="You play, the arm answers">Jam</button>
+          </div>
+          <button type="button" id="make-up" class="spark" title="Reachy makes up a short tune and the arm teaches it">Make up a tune</button>
+          <button type="button" id="reset" class="quiet" title="Clear your XP and finished lessons">Start over</button>
+        </div>
+      </section>
+
+      <!-- Screen 2: playing. -->
+      <section class="play" id="play" aria-label="The keyboard">
         <div class="words">
           <p class="eyebrow" id="eyebrow">Keys101</p>
           <p class="big" id="big">Pick a lesson</p>
-          <p class="small" id="small">The arm shows you each key and waits for you.</p>
+          <p class="small" id="small"></p>
         </div>
-        <div class="john" id="john"><iframe id="john-frame" title="John, a 3D singing head (Chimera)" allow="autoplay"></iframe></div>
+        <div class="row">
+          <div class="phrase" id="phrase" aria-label="The notes of this phrase"></div>
+          <p class="score" id="score"></p>
+        </div>
+        <div class="board">
+          <div class="arm-lane" aria-hidden="true"><span class="arm-mark" id="arm-mark">arm</span></div>
+          <div class="keys" id="keys" role="group" aria-label="Piano keys: click to play"></div>
+        </div>
+        <div class="dock">
+          <button type="button" id="stop" class="back">Back to the roadmap</button>
+          <ol class="steps" id="steps" aria-label="Where you are in the course"></ol>
+        </div>
       </section>
 
-      <div class="row">
-        <div class="phrase" id="phrase" aria-label="The notes of this phrase"></div>
-        <p class="score" id="score"></p>
-      </div>
-
-      <div class="board">
-        <div class="arm-lane" aria-hidden="true"><span class="arm-mark" id="arm-mark">arm</span></div>
-        <div class="keys" id="keys" role="group" aria-label="Piano keys: click to play"></div>
+      <!-- The moment a lesson ends. -->
+      <div class="cheer" id="cheer" hidden>
+        <p class="cheer-big" id="cheer-big"></p>
+        <p class="cheer-small" id="cheer-small"></p>
       </div>
     </main>
-
-    <footer class="dock">
-      <section class="path" aria-label="Your course">
-        <p class="label">Course</p>
-        <ol class="course" id="course"></ol>
-        <p class="caption" id="caption"></p>
-        <button type="button" id="reset" class="quiet" title="Start the course over">Start over</button>
-      </section>
-      <section class="free" aria-label="Free play">
-        <p class="label">Free play</p>
-        <select id="song" aria-label="Song"></select>
-        <div class="modes">
-          <button type="button" data-mode="learn" title="The arm shows you each key">Learn</button>
-          <button type="button" data-mode="watch" title="The arm plays a phrase, you play it back">Repeat</button>
-          <button type="button" data-mode="together" title="You lead, the arm plays the bass">Together</button>
-          <button type="button" data-mode="jam" title="You play, the arm answers">Jam</button>
-        </div>
-        <button type="button" id="stop" class="stop">Stop</button>
-      </section>
-    </footer>
 
     <script type="module" src="js/coach.js"></script>
   </body>

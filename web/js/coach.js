@@ -1,7 +1,8 @@
 // Keys101: the page of scripts/keys_coach.py. It shows the coach's state and sends your choices back.
 // Everything it shows comes from the server as one JSON state (GET /events). It sends: a lesson or a mode to
-// start, stop, a key you clicked (POST /cmd). One screen: the words, the keyboard, and a dock with the course
-// on the left and free play on the right.
+// start, stop, a key you clicked (POST /cmd). Two screens that slide past each other: the roadmap (the
+// course as a path of lessons, and free play) and the keyboard. John, the singing head, sits large and half
+// see-through behind both.
 
 const NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 // Computer keys for one octave and a bit from C4, like a tracker: A W S E D F T G Y H U J K.
@@ -19,6 +20,8 @@ let drawnCourse = "";
 let lastPress = 0;
 const judged = new Set();
 let lastJohn = 0;
+let holdPlay = 0; // keep the keyboard on screen until this time (ms), so a result can be read
+let cheerTimer = 0;
 
 // ---------------------------------------------------------------- server
 
@@ -117,7 +120,7 @@ function placeArm(arm) {
   mark.classList.add("on");
 }
 
-// ---------------------------------------------------------------- the dock
+// ---------------------------------------------------------------- the roadmap
 
 function renderSongs(next) {
   const key = JSON.stringify(next.songs);
@@ -126,49 +129,105 @@ function renderSongs(next) {
     drawnSongs = key;
     const chosen = select.value;
     select.innerHTML = next.songs.map((s) => `<option value="${s.name}">${s.title}</option>`).join("");
-    if (chosen) select.value = chosen;
+    if (next.song && next.songs.some((s) => s.name === next.song.name)) select.value = next.song.name;
+    else if (chosen) select.value = chosen;
   }
-  if (next.song && next.mode && !next.lesson) select.value = next.song.name;
 }
 
-/** The course: a row of numbered steps. Done ones can be replayed, the next one is open, the rest are locked. */
+const TAG = { done: "Done", open: "Start", locked: "Locked" };
+
+/** The line through the lesson circles: a dotted path for the whole road, a solid one up to where you are. */
+function drawRoad(course) {
+  const svg = $("road-line");
+  const box = svg.getBoundingClientRect();
+  const points = [...document.querySelectorAll("#road li button")].map((b) => {
+    const r = b.getBoundingClientRect();
+    return [r.left - box.left + r.width / 2, r.top - box.top + r.height / 2];
+  });
+  if (points.length < 2 || !box.width) return;
+  const path = (pts) => pts.map(([x, y], i) => {
+    if (i === 0) return `M${x},${y}`;
+    const [px, py] = pts[i - 1];
+    const mid = (px + x) / 2;
+    return `C${mid},${py} ${mid},${y} ${x},${y}`;
+  }).join(" ");
+  $("road-path").setAttribute("d", path(points));
+  const reached = Math.max(1, course.filter((l) => l.status === "done").length + 1);
+  $("road-done").setAttribute("d", path(points.slice(0, Math.min(reached, points.length))));
+}
+
+/** The course, twice: the big road on the first screen, and small steps under the keyboard. */
 function renderCourse(next) {
   const key = JSON.stringify([next.course, next.lesson]);
   if (key !== drawnCourse) {
     drawnCourse = key;
-    const list = $("course");
-    list.innerHTML = "";
+    const road = $("road");
+    const steps = $("steps");
+    road.innerHTML = "";
+    steps.innerHTML = "";
     next.course.forEach((lesson, i) => {
       const item = document.createElement("li");
-      if (i > 0 && next.course[i - 1].status === "done") item.className = "after-done";
+      item.className = lesson.status;
       const b = document.createElement("button");
       b.type = "button";
-      b.className = `${lesson.status}${next.lesson === lesson.id ? " running" : ""}`;
       b.disabled = lesson.status === "locked";
-      b.textContent = lesson.status === "done" ? "✓" : String(i + 1);
-      b.title = `${lesson.title}: ${lesson.goal}`;
+      b.textContent = lesson.status === "done" ? "\u2713" : String(i + 1);
       b.setAttribute("aria-label", `Lesson ${i + 1}, ${lesson.title}, ${lesson.status}`);
       b.addEventListener("click", () => {
         ensureAudio();
         send({ do: "lesson", id: lesson.id });
       });
       item.appendChild(b);
-      list.appendChild(item);
+      item.insertAdjacentHTML("beforeend", `<span class="tag">${TAG[lesson.status]}</span><span class="title">${lesson.title}</span><span class="goal">${lesson.goal}</span>`);
+      road.appendChild(item);
+
+      const step = document.createElement("li");
+      const done = i > 0 && next.course[i - 1].status === "done";
+      step.className = `${lesson.status}${next.lesson === lesson.id ? " running" : ""}${done ? " after-done" : ""}`;
+      step.innerHTML = `<span>${lesson.status === "done" ? "\u2713" : i + 1}</span>`;
+      steps.appendChild(step);
     });
-    const at = next.course.findIndex((l) => l.id === next.lesson);
-    const upcoming = at >= 0 ? at : next.course.findIndex((l) => l.status === "open");
-    const caption = $("caption");
-    if (upcoming >= 0) {
-      const lesson = next.course[upcoming];
-      caption.innerHTML = `<b>${at >= 0 ? "Now" : "Next"}: ${lesson.title}.</b> ${lesson.goal}.`;
-    } else {
-      caption.innerHTML = next.course.length ? "<b>Course finished.</b> Replay any lesson, or play freely." : "";
-    }
+    requestAnimationFrame(() => drawRoad(next.course));
+    const doneCount = next.course.filter((l) => l.status === "done").length;
+    $("done-count").textContent = doneCount;
+    $("lesson-count").textContent = next.course.length;
+    const upcoming = next.course.find((l) => l.status === "open");
+    $("home-small").textContent = upcoming
+      ? `${doneCount ? "Next" : "Start with"} lesson ${next.course.indexOf(upcoming) + 1}: ${upcoming.title}. ${upcoming.goal}.`
+      : "You finished the course. Replay any lesson, or play freely.";
   }
   // Hearts only show inside a lesson: free play costs nothing.
-  $("hearts").innerHTML = next.hearts == null ? "" : [0, 1, 2].map((i) => `<i class="${i < next.hearts ? "" : "lost"}">♥︎</i>`).join("");
+  const hearts = $("hearts");
+  const before = hearts.dataset.left;
+  hearts.innerHTML = next.hearts == null ? "" : [0, 1, 2].map((i) => `<i class="${i < next.hearts ? "" : "lost"}${String(i) === String(next.hearts) && before && Number(before) > next.hearts ? " pop" : ""}">\u2665\uFE0E</i>`).join("");
+  hearts.dataset.left = next.hearts == null ? "" : String(next.hearts);
   $("xp").textContent = next.xp;
   $("days").textContent = next.days;
+}
+
+/** Which screen shows. The keyboard while something runs, and a moment longer so its last words can be read. */
+function showView(was, next) {
+  const now = Date.now();
+  if (next.mode) holdPlay = now + 400;
+  else if (was?.mode && !next.mode) {
+    const lessonEnded = !!was.lesson;
+    const cheer = next.big === "Lesson complete" || next.big === "Out of hearts";
+    if (lessonEnded && cheer) {
+      $("cheer-big").textContent = next.big;
+      $("cheer-small").textContent = next.small;
+      $("cheer").dataset.tone = next.big === "Out of hearts" ? "miss" : "ok";
+      $("cheer").hidden = false;
+      clearTimeout(cheerTimer);
+      cheerTimer = setTimeout(() => ($("cheer").hidden = true), 3200);
+      holdPlay = now + 600;
+    } else holdPlay = now + 3500;
+    setTimeout(() => state && showView(state, state), holdPlay - now + 50);
+  }
+  const view = next.mode || now < holdPlay ? "play" : "home";
+  if (document.body.dataset.view !== view) {
+    document.body.dataset.view = view;
+    if (view === "home") requestAnimationFrame(() => drawRoad(next.course));
+  }
 }
 
 // ---------------------------------------------------------------- render
@@ -183,6 +242,14 @@ function render(next) {
   }
   renderSongs(next);
   renderCourse(next);
+  showView(was, next);
+  // Reachy's spoken guide: what it heard, then what it says.
+  const voice = next.voice ?? { on: false };
+  $("voice").hidden = !voice.on;
+  if (voice.on) {
+    const said = voice.reachy ? `<b>Reachy:</b> ${voice.reachy}` : voice.you ? `<b>You:</b> ${voice.you}` : 'Say "Hi Reachy", or "start lesson one".';
+    if ($("voice-text").innerHTML !== said) $("voice-text").innerHTML = said;
+  }
 
   $("chip-arm").textContent = next.arm.name || "Arm";
   $("chip-arm").classList.toggle("on", !!next.arm.name);
@@ -224,7 +291,6 @@ function render(next) {
   }
   lastPress = Math.max(lastPress, ...next.presses.map((p) => p.id), 0);
 
-  document.querySelectorAll(".modes button").forEach((b) => b.classList.toggle("on", b.dataset.mode === next.mode && !next.lesson));
   john.follow(was, next);
 }
 
@@ -270,7 +336,7 @@ const john = (() => {
           watch: "Watch the arm, then play it back.",
           together: "You lead. The arm and I follow.",
           jam: "Jam time. I do backing vocals.",
-          "": "Pick a lesson. I'll warm up my vocal folds.",
+          "": "Pick a lesson on the road. I'll warm up my vocal folds.",
         }[now.mode] ?? null;
         if (text) post({ type: "idle", text });
       }
@@ -286,6 +352,10 @@ document.querySelectorAll(".modes button").forEach((b) => {
     send({ do: "start", mode: b.dataset.mode, song: $("song").value });
   });
 });
+$("make-up").addEventListener("click", () => {
+  ensureAudio();
+  send({ do: "make_up", mode: "learn" });
+});
 $("stop").addEventListener("click", () => send({ do: "stop" }));
 $("reset").addEventListener("click", () => {
   if (confirm("Start the course over? Your XP and finished lessons are cleared.")) send({ do: "reset_course" });
@@ -299,6 +369,10 @@ window.addEventListener("keydown", (event) => {
   ensureAudio();
   send({ do: "key", midi });
 });
-window.addEventListener("resize", () => state && placeArm(state.arm));
+window.addEventListener("resize", () => {
+  if (!state) return;
+  placeArm(state.arm);
+  drawRoad(state.course);
+});
 
 connect();

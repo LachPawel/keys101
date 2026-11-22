@@ -33,6 +33,7 @@ import argparse
 import contextlib
 import json
 import queue
+import random
 import re
 import subprocess
 import sys
@@ -155,6 +156,48 @@ class Song:
             "low": min(notes) if notes else None,
             "high": max(notes) if notes else None,
         }
+
+
+MADE_UP = "made_up"  # the song Reachy makes up on the spot: one at a time, the newest replaces the last
+TUNE_CHORDS = (  # root, the bass key under it: a tune walks home through these, one per bar
+    ((0, 4, 7), 48),  # C: C3 in the bass
+    ((7, 2), 55),  # G: G3
+    ((5, 9, 0), 53),  # F: F3
+    ((0, 4, 7), 48),  # C again: home
+)
+
+
+def compose(reaches: Callable[[int], bool], rng: random.Random | None = None) -> Song:
+    """A short new tune from the keys the arm knows, made up on the spot: four bars of four notes over
+    C, G, F and C. Every bar starts on a note of its chord and then walks by steps, and the tune ends on
+    the home note, so it sounds like a tune and not like dice. The arm's bass is each chord's root."""
+    rng = rng or random.Random()
+    scale = [m for m in (60, 62, 64, 65, 67, 69) if reaches(m)]
+    if len(scale) < 3:
+        scale = [60, 62, 64, 65, 67, 69]
+    bars: list[Bar] = []
+    at = rng.choice([i for i, m in enumerate(scale) if m % 12 in TUNE_CHORDS[0][0]] or [0])
+    for number, (chord, bass) in enumerate(TUNE_CHORDS):
+        tones = [i for i, m in enumerate(scale) if m % 12 in chord] or list(range(len(scale)))
+        at = min(tones, key=lambda i: (abs(i - at), rng.random()))  # the nearest note of this chord
+        notes = [scale[at]]
+        for _ in range(3):
+            step = rng.choice((-1, -1, 1, 1, 0, 2, -2))
+            at = max(0, min(len(scale) - 1, at + step))
+            notes.append(scale[at])
+        if number == len(TUNE_CHORDS) - 1:
+            notes[-1] = scale[0]  # home
+            if abs(scale.index(notes[-2]) - 0) > 2:
+                notes[-2] = scale[1]  # and a step down into it
+        bars.append(Bar(you=notes, arm=bass if reaches(bass) else None))
+    song = Song(
+        name=MADE_UP,
+        title="Reachy's new tune",
+        about="Made up a moment ago: " + " ".join(midi_name(n) for bar in bars for n in bar.you),
+        level=1,
+        phrases=[Phrase(bars[:2]), Phrase(bars[2:])],
+    )
+    return song
 
 
 def parse_lesson(text: str, name: str = "song") -> Song:
@@ -364,6 +407,7 @@ class State:
             "hearts": None,  # hearts left in it
             "xp": 0,
             "days": 0,  # days in a row with a finished lesson
+            "voice": {"on": False, "you": "", "reachy": ""},  # Reachy's spoken guide (keys_guide.py)
         }
 
     def set(self, **changes: Any) -> None:
@@ -743,6 +787,24 @@ class PolicyArm:
             self.goto(keys["above"], down)
             self.state.set(arm={**self.state.get("arm"), "pressing": None})
 
+    def snap(self) -> Any:
+        """What the policy's camera sees right now (a BGR picture), or None. Only between presses."""
+        import cv2
+
+        path = ROOT / "outputs" / "keys_view.jpg"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        before = path.stat().st_mtime if path.exists() else 0.0
+        try:
+            self.tell(f"/snap {path}")
+        except RuntimeError:
+            return None
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            if path.exists() and path.stat().st_mtime > before:
+                return cv2.imread(str(path))
+            time.sleep(0.05)
+        return None
+
     def task(self, midi: int) -> str:
         """The words the policy was trained on for this key."""
         if self.prompts == "notes":  # keys_scripted.py record --names
@@ -905,6 +967,7 @@ class Coach:
         self.thread: threading.Thread | None = None
         self.lock = threading.Lock()
         self.hearts: int | None = None  # None outside a lesson: free practice costs nothing
+        self.head: Any = None  # Reachy's head (keys_head.Head): locked on the piano while anything plays
         self.progress_path = progress_path
         self.progress = load_progress(self.progress_path)
         self.show_course()
@@ -965,6 +1028,14 @@ class Coach:
 
     # ---- control, from the page
 
+    def make_up(self, mode: str = "learn") -> Song:
+        """Reachy makes up a short tune from the keys the arm knows, and it starts right away."""
+        song = compose(self.arm.board.reaches)
+        self.songs[MADE_UP] = song
+        self.state.set(songs=[s.info() for s in self.songs.values()])
+        self.start(mode if mode in ("learn", "watch", "together") else "learn", MADE_UP)
+        return song
+
     def start(self, mode: str, song_name: str | None, lesson: dict[str, Any] | None = None) -> None:
         if mode != "jam" and (mode not in ("learn", "watch", "together") or song_name not in self.songs):
             return
@@ -1010,9 +1081,14 @@ class Coach:
 
     def _run(self, run: Callable[[], None], lesson: dict[str, Any] | None = None) -> None:
         try:
+            if self.head is not None:
+                self.say("Get ready", "Reachy looks at the keys.")
+                self.head.to_keys()
             run()
             if lesson is not None:
                 self.finish_lesson(lesson)
+                if self.head is not None:
+                    self.head.cheer()
         except OutOfHearts:
             self.state.set(
                 big="Out of hearts", small="Three wrong keys. Take a breath and try the lesson again.",
@@ -1030,6 +1106,8 @@ class Coach:
             with contextlib.suppress(Exception):
                 self.arm.away()
             self.hearts = None
+            if self.head is not None:
+                self.head.release()
             self.state.set(mode="", target=None, lesson=None, hearts=None)
 
     # ---- helpers
@@ -1301,6 +1379,8 @@ def make_handler(coach: Coach, state: State, ears: Ears, web: Path) -> type[Base
                 threading.Thread(
                     target=coach.start, args=(cmd.get("mode", ""), cmd.get("song")), daemon=True
                 ).start()
+            elif what == "make_up":
+                threading.Thread(target=coach.make_up, args=(cmd.get("mode", "learn"),), daemon=True).start()
             elif what == "lesson" and isinstance(cmd.get("id"), str):
                 threading.Thread(target=coach.start_lesson, args=(cmd["id"],), daemon=True).start()
             elif what == "reset_course":
@@ -1443,9 +1523,12 @@ def score(args: argparse.Namespace) -> None:
     ears = Ears(state)
     if ears.open_midi(args.midi) is None:
         sys.exit("The scorer needs the MIDI keyboard: it says which key the policy pressed.")
+    board = load_board(args.board)
     learned = [note_midi(n) for n in args.policy_keys] if args.policy_keys else None
+    if args.all_keys:
+        learned = board.reach
     arm = PolicyArm(
-        load_board(args.board), ears, state, args.model, args.robot_port, Speeds(), args.prompts, learned,
+        board, ears, state, args.model, args.robot_port, Speeds(), args.prompts, learned,
         args.lock_reachy, args.policy_speed,
     )  # fmt: skip
     keys = sorted(arm.policy_keys)
@@ -1474,8 +1557,11 @@ def score(args: argparse.Namespace) -> None:
             print(f"[{i}/{len(order)}] {midi_name(target):3} {verdict:9} {rows[-1]['heard']}", flush=True)
     except KeyboardInterrupt:
         print("\nStopped.")
+    except Exception as error:  # noqa: BLE001  the arm dropped out: keep what was scored so far
+        print(f"\nStopped early: {error}")
     finally:
-        arm.close()
+        with contextlib.suppress(Exception):
+            arm.close()
         ears.close()
     if not rows:
         return
@@ -1516,7 +1602,10 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--arm", choices=("sim", "scripted", "policy"), default="sim")
     parser.add_argument(
-        "--model", default="keys101", help="The policy for --arm policy (see keys_play.py MODELS)"
+        "--model",
+        default="keys101-cam",
+        help="The policy for --arm policy (keys_play.py MODELS): keys101-cam (camera only, 59/60 in the "
+        "comparison), keys101 (camera and ears, 54/60), keys101-22 (all 22 keys)",
     )
     parser.add_argument(
         "--prompts",
@@ -1531,6 +1620,11 @@ def main(argv: list[str] | None = None) -> None:
         "Fewer, e.g. C3 D3 E3 F3 G3 A3, leaves the others to the taught poses",
     )
     parser.add_argument(
+        "--all-keys",
+        action="store_true",
+        help="The policy may press every key the arm has a pose for (the 22-key model)",
+    )
+    parser.add_argument(
         "--lock-reachy",
         action="store_true",
         help="Send Reachy's head to its saved pose before each policy press",
@@ -1539,6 +1633,24 @@ def main(argv: list[str] | None = None) -> None:
         "--policy-speed", type=float, choices=(1.0, 1.5, 2.0), default=1.0,
         help="Play the policy's moves this many times faster than it was shown them",
     )  # fmt: skip
+    parser.add_argument(
+        "--voice",
+        action="store_true",
+        help="Reachy talks: say 'Hi Reachy' or 'start lesson one' (keys_guide.py)",
+    )
+    parser.add_argument("--mic", default="MacBook Pro Microphone", help="The microphone Reachy listens on")
+    parser.add_argument(
+        "--cartoon",
+        type=float,
+        default=1.12,
+        help="Reachy's voice this much faster and higher (1 = as it comes)",
+    )
+    parser.add_argument(
+        "--head",
+        choices=("alive", "still"),
+        help="alive: Reachy looks at whoever speaks, and locks on the piano while anything plays "
+        "(the default with --voice). still: its head is never moved",
+    )
     parser.add_argument("--robot-port", default="/dev/tty.usbmodem5B415331661")
     parser.add_argument("--robot-id", default="workshop_so101")
     parser.add_argument("--midi", default="auto", help='Part of the keyboard\'s name, or "none"')
@@ -1590,6 +1702,8 @@ def main(argv: list[str] | None = None) -> None:
         arm = ScriptedArm(board, ears, state, args.robot_port, args.robot_id, speeds)
     elif args.arm == "policy":
         learned = [note_midi(n) for n in args.policy_keys] if args.policy_keys else None
+        if args.all_keys:
+            learned = board.reach
         arm = PolicyArm(
             board, ears, state, args.model, args.robot_port, speeds, args.prompts, learned,
             args.lock_reachy, args.policy_speed,
@@ -1614,6 +1728,16 @@ def main(argv: list[str] | None = None) -> None:
         small="The arm shows you each key and waits for you.",
     )
     coach = Coach(arm, ears, state, songs, Settings(bass_learned=args.bass == "policy"))
+    guide = None
+    if args.voice:
+        import keys_guide
+
+        guide = keys_guide.Guide(coach, state, songs, args.mic, args.cartoon)
+        guide.start()
+    if (args.head or ("alive" if args.voice else "still")) == "alive":
+        import keys_head
+
+        coach.head = keys_head.Head(arm, (lambda: guide.spoken) if guide is not None else (lambda: ""))
     web = WEB.resolve()
     try:
         server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(coach, state, ears, web))
@@ -1633,6 +1757,10 @@ def main(argv: list[str] | None = None) -> None:
     except KeyboardInterrupt:
         print()
     finally:
+        if guide is not None:
+            guide.close()
+        if coach.head is not None:
+            coach.head.close()
         coach.stop()
         arm.close()
         ears.close()

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import random
 import threading
 import time
 import urllib.request
@@ -328,3 +329,35 @@ def test_the_real_course_is_playable() -> None:
         if lesson["mode"] != "jam":
             song = songs[lesson["song"]]
             assert all(0 <= i < len(song.phrases) for i in lesson.get("phrases", []))
+
+
+def test_a_made_up_tune_is_playable_and_ends_at_home() -> None:
+    reach = {48, 50, 52, 53, 55, 57, 60, 62, 64, 65, 67, 69}
+    for seed in range(40):
+        song = kc.compose(reach.__contains__, random.Random(seed))
+        notes = [n for phrase in song.phrases for n in phrase.notes]
+        assert len(song.phrases) == 2 and len(notes) == 16
+        assert set(notes) <= {60, 62, 64, 65, 67, 69}, "only keys the arm was shown"
+        assert notes[-1] == 60, "it ends on the home note"
+        assert max(abs(a - b) for a, b in itertools.pairwise(notes)) <= 7, "no wild jumps"
+        assert [bar.arm for phrase in song.phrases for bar in phrase.bars] == [48, 55, 53, 48]
+    assert (
+        len({tuple(kc.compose(reach.__contains__, random.Random(s)).phrases[0].notes) for s in range(20)}) > 5
+    )
+
+
+def test_the_guide_understands_requests() -> None:
+    import keys_guide as kg
+
+    course = [
+        {"id": f"l{i}", "status": "open" if i == 2 else "done" if i < 2 else "locked"} for i in range(1, 8)
+    ]
+    songs = dict.fromkeys(("mary", "ode", "twinkle"))
+    assert kg.parse("Start lesson one", course, songs) == ("lesson", "l1")
+    assert kg.parse("okay, next", course, songs) == ("lesson", "l2")
+    assert kg.parse("play Ode to Joy together", course, songs) == ("mode", "together", "ode")
+    assert kg.parse("let's jam", course, songs) == ("mode", "jam", "")
+    assert kg.parse("can you make up a tune?", course, songs) == ("tune", "learn")
+    assert kg.parse("surprise me, and play the bass with me", course, songs) == ("tune", "together")
+    assert kg.parse("stop please", course, songs) == ("stop",)
+    assert kg.parse("what is the weather", course, songs) == ("unknown",)

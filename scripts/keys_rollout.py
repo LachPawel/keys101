@@ -20,6 +20,7 @@ the session when it is created.
 from __future__ import annotations
 
 import json
+import os
 import time
 from typing import Any
 
@@ -89,6 +90,40 @@ def goto(controller: Any, pose: dict[str, float], seconds: float, fps: int = 50)
     return True
 
 
+def snap(controller: Any, path: str, camera: str = "front") -> bool:
+    """Save what the policy's camera sees right now as a JPEG, with the policy paused. For keys_coach.py:
+    to check that Reachy's head is back on the view the policy learned from."""
+    import cv2
+
+    if controller.running:
+        return False
+    observation = controller._ctx.hardware.robot_wrapper.get_observation()
+    image = observation.get(camera)
+    if image is None:
+        return False
+    tmp = f"{path}.tmp.jpg"
+    cv2.imwrite(tmp, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+    os.replace(tmp, path)  # the reader never sees half a file
+    return True
+
+
+def add_snap_command() -> None:
+    """/snap /path/to/view.jpg   -> the camera's picture, saved to that file."""
+    original = interactive.InteractiveSession.__init__
+
+    def with_snap(self: Any, *args: Any, **kwargs: Any) -> None:
+        original(self, *args, **kwargs)
+
+        def command(cmd: Any) -> None:
+            path = (cmd.args or "").strip()
+            if not path or not snap(self.controller, path):
+                self._print("No picture: give a file path, and pause the policy first.")
+
+        self._commands["snap"] = (command, " <file>", "save the camera's picture (policy paused)")
+
+    interactive.InteractiveSession.__init__ = with_snap  # type: ignore[method-assign]
+
+
 def add_goto_command() -> None:
     """/goto {"shoulder_pan.pos": 3.1, ...} 0.6   -> pause the policy, move there in 0.6 s."""
     original = interactive.InteractiveSession.__init__
@@ -146,4 +181,5 @@ def add_pause_command() -> None:
 if __name__ == "__main__":
     add_pause_command()
     add_goto_command()
+    add_snap_command()
     lerobot_rollout.main()

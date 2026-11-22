@@ -49,6 +49,8 @@ MODELS = {
     "keys101": ("outputs/keys_models/keys101", "keys_cameras_midi.json", True),
     # Its twin trained on the same episodes without the ears: camera only.
     "keys101-cam": ("outputs/keys_models/keys101-cam", "keys_cameras_front.json", False),
+    # Trained on the white keys and the ten black keys together (keys101_train_sharps.sh).
+    "keys101-22": ("outputs/keys_models/keys101-22", "keys_cameras_midi.json", True),
     # Trained from the SmolVLA base on the 300 note-to-note episodes (keys_flow_train.sh), 10,000 steps.
     # It never saw the trip back to the parked pose: use it with `song ... --flow`.
     "flow": ("outputs/keys_models/flow_10k", "keys_cameras_midi.json", True),
