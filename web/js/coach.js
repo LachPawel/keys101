@@ -7,7 +7,7 @@
 const NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 // Computer keys for one octave and a bit from C4, like a tracker: A W S E D F T G Y H U J K.
 const COMPUTER = { a: 0, w: 1, s: 2, e: 3, d: 4, f: 5, t: 6, g: 7, y: 8, h: 9, u: 10, j: 11, k: 12, o: 13, l: 14 };
-const MODE_WORD = { learn: "Learn", watch: "Repeat", together: "Together", jam: "Jam" };
+const MODE_WORD = { listen: "Listen", learn: "Learn", watch: "Repeat", together: "Together", jam: "Jam" };
 
 export const isBlack = (midi) => NAMES[midi % 12].endsWith("#");
 export const noteName = (midi) => `${NAMES[midi % 12]}${Math.floor(midi / 12) - 1}`;
@@ -226,6 +226,8 @@ function showView(was, next) {
   const view = next.mode || now < holdPlay ? "play" : "home";
   if (document.body.dataset.view !== view) {
     document.body.dataset.view = view;
+    document.activeElement?.blur?.(); // a focused button of the screen that slides away must not pull the page
+    for (const box of [document.scrollingElement, document.body, document.querySelector("main")]) box?.scrollTo?.(0, 0);
     if (view === "home") requestAnimationFrame(() => drawRoad(next.course));
   }
 }
@@ -332,6 +334,7 @@ const john = (() => {
         post({ type: "sing", midi: now.john.midi, seconds: now.john.seconds, name: now.john.name, backing: now.mode === "jam" });
       } else if (now.mode !== was?.mode) {
         const text = {
+          listen: "The arm plays. I hum along.",
           learn: "Follow the arm. If you miss, I sing the right one.",
           watch: "Watch the arm, then play it back.",
           together: "You lead. The arm and I follow.",
@@ -346,7 +349,7 @@ const john = (() => {
 
 // ---------------------------------------------------------------- controls
 
-document.querySelectorAll(".modes button").forEach((b) => {
+document.querySelectorAll(".modes button[data-mode]").forEach((b) => {
   b.addEventListener("click", () => {
     ensureAudio();
     send({ do: "start", mode: b.dataset.mode, song: $("song").value });
@@ -374,5 +377,13 @@ window.addEventListener("resize", () => {
   placeArm(state.arm);
   drawRoad(state.course);
 });
+
+// The page never scrolls: if a focused control of the screen parked off to the side pulls it, put it back.
+const unscroll = () => {
+  for (const box of [document.scrollingElement, document.body, document.querySelector("main")]) {
+    if (box && (box.scrollLeft || box.scrollTop)) box.scrollTo(0, 0);
+  }
+};
+window.addEventListener("scroll", unscroll, true);
 
 connect();

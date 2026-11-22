@@ -16,6 +16,7 @@
         <span class="pill"><b id="xp">0</b> XP</span>
         <span class="pill"><b id="days">0</b> day streak</span>
         <span class="pill"><b id="done-count">0</b> of <span id="lesson-count">7</span> lessons</span>
+        <button type="button" id="reset" class="quiet" title="Clear your XP and finished lessons">Start over</button>
       </div>
       <div class="chips">
         <span class="chip warn" id="chip-sound">Click once for sound</span>
@@ -40,17 +41,19 @@
           <svg class="road-line" id="road-line" aria-hidden="true"><path id="road-path" /><path id="road-done" /></svg>
           <ol class="road" id="road"></ol>
         </div>
-        <div class="free">
-          <p class="label">Or play freely</p>
-          <select id="song" aria-label="Song"></select>
-          <div class="modes">
-            <button type="button" data-mode="learn" title="The arm shows you each key">Learn</button>
-            <button type="button" data-mode="watch" title="The arm plays a phrase, you play it back">Repeat</button>
-            <button type="button" data-mode="together" title="You lead, the arm plays the bass">Together</button>
-            <button type="button" data-mode="jam" title="You play, the arm answers">Jam</button>
+        <div class="free" aria-label="Free play">
+          <div class="free-song">
+            <label class="label" for="song">Free play</label>
+            <div class="pick"><select id="song"></select></div>
           </div>
-          <button type="button" id="make-up" class="spark" title="Reachy makes up a short tune and the arm teaches it">Make up a tune</button>
-          <button type="button" id="reset" class="quiet" title="Clear your XP and finished lessons">Start over</button>
+          <div class="modes">
+            <button type="button" data-mode="listen"><b>Listen</b><span>The arm plays alone</span></button>
+            <button type="button" data-mode="learn"><b>Learn</b><span>It shows each key</span></button>
+            <button type="button" data-mode="watch"><b>Repeat</b><span>You play it back</span></button>
+            <button type="button" data-mode="together"><b>Together</b><span>It plays the bass</span></button>
+            <button type="button" data-mode="jam"><b>Jam</b><span>It answers you</span></button>
+            <button type="button" id="make-up" class="spark"><b>New tune</b><span>Reachy invents it</span></button>
+          </div>
         </div>
       </section>
 

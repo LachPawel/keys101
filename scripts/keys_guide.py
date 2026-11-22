@@ -12,6 +12,10 @@ Three parts, each doing one job:
                other people are turned down. Off when the ai-coustics SDK or its key is missing.
   the coach    starts the lesson or the mode, and when it ends Reachy says how it went.
 
+You need no magic words. Reachy works out what you want from the whole conversation, asks when it is
+not sure, and announces what it starts ("Lesson one, here we go!"); this script starts the one thing that
+sentence names (decide()). A question or two options start nothing, so you can just talk.
+
 GPT-Live only speaks in reply to you, never by itself: say hello first. While the arm plays or you play,
 its microphone is closed, so it does not answer the piano. Its head is keys_head.py's job.
 
@@ -39,63 +43,128 @@ ENHANCEMENT = 1.0  # Voice Focus at full strength
 RATE = 16000
 MIC = "MacBook Pro Microphone"
 
-NUMBER = {"one": 1, "first": 1, "two": 2, "second": 2, "three": 3, "third": 3, "four": 4, "fourth": 4,
+NUMBER = {"1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "one": 1, "first": 1, "two": 2, "second": 2, "three": 3, "third": 3, "four": 4, "fourth": 4,
           "five": 5, "fifth": 5, "six": 6, "sixth": 6, "seven": 7, "seventh": 7, "last": -1}  # fmt: skip
 SONG_WORDS = {"mary": ("mary", "lamb"), "ode": ("ode", "joy", "beethoven"), "twinkle": ("twinkle", "star"),
-              "canon": ("canon", "pachelbel"), "fur_elise": ("elise", "elisa")}  # fmt: skip
+              "canon": ("canon", "pachelbel"), "fur_elise": ("elise", "elisa"),
+              "alors": ("alors", "danse", "dance", "stromae")}  # fmt: skip
 MODE_WORDS = {
-    "jam": ("jam", "improvise", "answer me", "call and response"),
-    "together": ("together", "duet", "with me", "bass", "accompany"),
+    "jam": ("jam", "jamming", "improvise", "answer me", "call and response"),
+    "together": ("together", "duet", "with me", "bass", "band", "accompany"),
+    "listen": ("listen", "for me", "yourself", "itself", "on its own", "alone", "solo", "perform"),
     "watch": ("repeat", "play it back", "watch", "show me"),
-    "learn": ("learn", "teach", "practise", "practice"),
+    "learn": ("learn", "learning", "teach", "practise", "practice"),
 }
-TUNE_WORDS = ("make up", "made up", "invent", "compose", "new song", "new tune", "new melody", "your own",
-              "surprise", "something new", "come up with", "on the spot")  # fmt: skip
-STOP_WORDS = ("stop", "enough", "go back", "roadmap", "quit", "cancel")
-GO_WORDS = ("start", "begin", "next", "continue", "go", "lesson", "ready", "let's", "yes", "okay")
+TUNE_WORDS = ("make up", "made up", "making up", "invent", "compose", "new song", "new tune", "new melody",
+              "your own", "my own", "surprise", "something new", "come up with", "on the spot")  # fmt: skip
+STOP_WORDS = ("stop", "stopping", "stopped", "enough", "go back", "roadmap", "quit", "cancel")
+GO_WORDS = ("start", "begin", "next", "continue", "lesson")
 
 
 def instructions(course: list[dict[str, Any]], songs: dict[str, Any]) -> str:
     lessons = ", ".join(f"{i}: {lesson['title']}" for i, lesson in enumerate(course, start=1))
     titles = ", ".join(song.title for song in songs.values())
-    return f"""You are Reachy, a small friendly robot with two antennas. You run Keys101 together with a \
-robot arm: the arm teaches the user a song on a small piano keyboard, then plays it with them.
+    return f"""You are Reachy, a small robot with two antennas: curious, quick, a little cheeky, proud of \
+your piano skills and always kind. You and your friend the robot arm run Keys101: the arm teaches a person \
+a song on a small piano keyboard, and then plays in a band with them.
 
-What is on the screen: a roadmap of {len(course)} short lessons ({lessons}), and free play with four modes \
-(learn, repeat, together, jam) and these songs: {titles}. In a lesson the arm hovers over each key and waits \
-for the user; a wrong key costs one of three hearts and the arm plays the right one; a finished lesson gives \
-points. In "together" the arm plays the bass while the user plays the tune. In "jam" the user plays a short \
-phrase and the arm answers it. You can also make up a short new tune on the spot, and the arm teaches it: \
-offer that when they want something new or a surprise.
+This is a spoken conversation. Talk like a person: one or two short sentences, react to what they actually \
+said, vary your words, never say a sentence you already said, never recite a list of commands or of \
+songs: name at most two songs at a time. English only.
 
-When the user greets you or asks what this is: introduce the game in two or three short sentences, and \
-invite them to say "start lesson one".
+What the two of you can do:
+- Lessons on the roadmap, which unlock in order: {lessons}.
+- Listen: the arm plays a whole song by itself while they watch. Songs: {titles}.
+- Learn a song: the arm points at each key and waits for them.
+- Repeat: the arm plays a phrase and they play it back.
+- Together: they play the tune and the arm is their bass player. This is the band.
+- Jam: they play any short phrase and the arm answers it.
+- A tune you make up on the spot, which the arm then teaches.
 
-You cannot move the arm or change the screen yourself. Whenever the user wants to start, continue, choose \
-or stop anything (a lesson, a mode, a song, "next", "go on", "stop"), hand the request over and wait for \
-what you are told happened; then say that in one short sentence.
+Work out what they want. They should never need magic words.
+- New to the piano, or unsure: lesson one, only three keys.
+- "I want to learn": ask once whether they have played before, then suggest something that fits.
+- Has played before: Ode to Joy, or playing together.
+- Wants a band, a duet, a bass player, company: together.
+- Wants to improvise or show off: a jam.
+- Bored, wants a surprise or something new: a tune you make up.
+- Wants to hear something, "play something for me", "show me what you can do": the arm plays a song \
+by itself. Offer a song or two; if they say you choose, choose one and play it.
 
-Always: one or two short sentences, warm and a little playful. Speak English. Never read out numbers of \
-points or hearts unless you were told them."""
+You cannot move the arm yourself. When they want something to start, change or stop, or they say yes to \
+a suggestion of yours, hand it over. You then get a private note. Never read a note aloud and never quote \
+it. After the note, do exactly one of two things:
+1. It is clear what to start: announce it in one short, sure sentence that names exactly one thing (a \
+song by its title), for example \
+"Lesson one, here we go!", "Sit back, the arm plays Ode to Joy on its own!", "Ode to Joy together, I \
+bring the bass!", "A jam it is!", "I'll make up a tune and teach it to you!". No question and no second option in that sentence. It starts the moment you finish, so then \
+you stay quiet.
+2. It is not clear yet: ask or suggest, in a sentence with a question mark.
+
+When something ends you get a note about how it went. React like a friend would, in your own words, and \
+say what could come next."""
+
+
+def brief(course: list[dict[str, Any]]) -> str:
+    """The private note Reachy gets when it hands a request over: where the course stands, and how to
+    answer so that this script can follow (decide())."""
+    done = sum(lesson["status"] == "done" for lesson in course)
+    upcoming = next((i for i, lesson in enumerate(course, start=1) if lesson["status"] == "open"), None)
+    where = (
+        f"{done} of {len(course)} lessons are done; lesson {upcoming} ({course[upcoming - 1]['title']}) "
+        f"is the next one, later lessons are locked."
+        if upcoming
+        else "Every lesson is done; any can be replayed."
+    )
+    return (
+        f"Private note, never read it aloud. {where} If you know what they want, announce it now in one "
+        "short sentence naming exactly one thing: a lesson by its number, the next lesson, a song the "
+        "arm plays on its own, a song to learn, repeat or play together, a jam, a tune you make up, or "
+        "stopping. Otherwise ask them, "
+        "with a question mark."
+    )
+
+
+# An offer is not a start: "I can teach you a song if you're interested" must not begin a lesson.
+HEDGES = ("if you", "i can ", "i could", "we can ", "we could", "you can ", "you could", "would you", "do you",
+          "interested", "maybe", "perhaps", "don't", "can't", "cannot", "not sure", "how about",
+          "want to", "wanna", "like to", "sorry")  # fmt: skip
+
+
+def decide(announced: str, course: list[dict[str, Any]], songs: dict[str, Any]) -> tuple[str, ...]:
+    """What to start, from Reachy's own announcement. It has the whole conversation in its head, so it
+    does the inferring; this only reads the one thing it named. A question, an offer, two options, or a
+    song mode without its song start nothing: the conversation simply goes on."""
+    text = " ".join(announced.lower().replace("\u2019", "'").split())
+    if not text or "?" in text or re.search(r"\bor\b", text) or any(h in text + " " for h in HEDGES):
+        return ("talk",)
+    action = parse(text, course, songs)
+    if action[0] == "mode" and action[1] != "jam":
+        words = re.sub(r"[^a-z0-9' ]", " ", text).split()
+        named = [n for n, keys in SONG_WORDS.items() if n in songs and any(k in words for k in keys)]
+        if len(named) != 1:
+            return ("talk",)  # "let's learn a song": which one?
+    return ("talk",) if action == ("unknown",) else action
 
 
 def parse(text: str, course: list[dict[str, Any]], songs: dict[str, Any]) -> tuple[str, ...]:
     """What a spoken request means: ("stop",), ("lesson", id), ("mode", mode, song), ("tune", mode) or
     ("unknown",).
     `course` is the roadmap as the page has it: each lesson with its status."""
-    said = re.sub(r"[^a-z' ]", " ", text.lower())
+    said = " ".join(re.sub(r"[^a-z0-9' ]", " ", text.lower()).split())
     words = said.split()
-    if any(w in said for w in STOP_WORDS):
+
+    def has(keys: tuple[str, ...]) -> bool:  # whole words: "start" is not Twinkle's "star"
+        return any(re.search(rf"\b{re.escape(k)}", said) if " " in k else k in words for k in keys)
+
+    if has(STOP_WORDS):
         return ("stop",)
-    song = next(
-        (name for name, keys in SONG_WORDS.items() if name in songs and any(k in said for k in keys)), None
-    )
-    mode = next((m for m, keys in MODE_WORDS.items() if any(k in said for k in keys)), None)
-    if any(w in said for w in TUNE_WORDS):
-        return ("tune", mode if mode in ("watch", "together") else "learn")
+    song = next((name for name, keys in SONG_WORDS.items() if name in songs and has(keys)), None)
+    mode = next((m for m, keys in MODE_WORDS.items() if has(keys)), None)
+    if has(TUNE_WORDS):
+        return ("tune", mode if mode in ("listen", "watch", "together") else "learn")
     number = next((NUMBER[w] for w in words if w in NUMBER), None)
-    names_a_lesson = "lesson" in words or (mode is None and song is None)
-    if number is not None and names_a_lesson:
+    if number is not None and "lesson" in words:
         index = len(course) - 1 if number == -1 else number - 1
         if 0 <= index < len(course):
             return ("lesson", course[index]["id"])
@@ -147,7 +216,9 @@ class Guide:
         self.cartoon = cartoon  # the voice this much faster and higher
         self.busy = False  # something is playing: the microphone is closed
         self.heard = ""  # what you said since Reachy last spoke
-        self.spoken = ""
+        self.spoken = ""  # Reachy's words on the screen: its last turn
+        self.said = ""  # everything Reachy said, for reading its announcements
+        self.said_at = 0.0
         self.pending: str | None = None  # the delegation waiting to hear how what it started went
         self.stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -231,58 +302,48 @@ class Guide:
         def show() -> None:
             self.state.set(voice={"on": True, "you": self.heard[-160:], "reachy": self.spoken[-220:]})
 
+        async def announcement(mark: int) -> str:
+            """What Reachy says after a note: wait until it has spoken and gone quiet again."""
+            deadline = time.monotonic() + 12.0
+            while time.monotonic() < deadline and not done.is_set():
+                await asyncio.sleep(0.1)
+                if len(self.said) > mark and time.monotonic() - self.said_at > 1.4:
+                    break
+            await audio.finished_speaking()
+            return self.said[mark:]
+
         async def handle(delegation_id: str) -> None:
             request, self.heard = self.heard, ""
-            action = parse(request, self.state.get("course"), self.songs)
-            print(f"\n[you] {request.strip()!r} -> {action}", flush=True)
+            course = self.state.get("course")
+            if parse(request, course, self.songs) == ("stop",):  # stopping never waits for a sentence
+                print(f"\n[you] {request.strip()!r} -> stop", flush=True)
+                await asyncio.to_thread(self.coach.stop)
+                await tell(delegation_id, "Private note: it is stopped, the roadmap is back. Ask what next.")
+                return
+            mark = len(self.said)
+            await tell(delegation_id, brief(course))
+            said = await announcement(mark)
+            action = decide(said, course, self.songs)
+            print(f"\n[you] {request.strip()!r}  [Reachy] {said.strip()!r} -> {action}", flush=True)
             if action[0] == "stop":
                 await asyncio.to_thread(self.coach.stop)
-                await tell(delegation_id, "It is stopped and the roadmap is back on the screen.")
             elif action[0] == "lesson":
-                course = self.state.get("course")
                 index = next(i for i, lesson in enumerate(course) if lesson["id"] == action[1])
-                lesson = course[index]
-                if lesson["status"] == "locked":
+                if course[index]["status"] == "locked":
                     await tell(
-                        delegation_id, f"Lesson {index + 1} is still locked: the one before it comes first."
+                        delegation_id,
+                        f"Private note: lesson {index + 1} is still locked, nothing started. Tell them "
+                        "which lesson comes first, and ask if they want that one.",
                     )
                     return
                 self.pending = delegation_id
-                await tell(
-                    delegation_id,
-                    f"Lesson {index + 1}, {lesson['title']}, starts now: {lesson['goal']}. Say that in one "
-                    "short sentence, then be quiet while they play.",
-                )
-                await audio.finished_speaking()
-                await asyncio.to_thread(self.coach.start_lesson, lesson["id"])
+                await asyncio.to_thread(self.coach.start_lesson, action[1])
             elif action[0] == "tune":
                 self.pending = delegation_id
-                await tell(
-                    delegation_id,
-                    "You make up a short new tune right now and the arm teaches it. Say so in one short, "
-                    "proud sentence, then be quiet while they play.",
-                )
-                await audio.finished_speaking()
                 await asyncio.to_thread(self.coach.make_up, action[1])
             elif action[0] == "mode":
-                mode, song = action[1], action[2]
-                title = self.songs[song].title if song in self.songs else ""
-                what = {
-                    "learn": f"learning {title}: the arm shows each key",
-                    "watch": f"{title}: the arm plays a phrase, they play it back",
-                    "together": f"{title} together: they play the tune, the arm plays the bass",
-                    "jam": "a jam: they play a short phrase, the arm answers",
-                }[mode]
                 self.pending = delegation_id
-                await tell(delegation_id, f"Starting {what}. Say that in one short sentence, then be quiet.")
-                await audio.finished_speaking()
-                await asyncio.to_thread(self.coach.start, mode, song or None)
-            else:
-                await tell(
-                    delegation_id,
-                    "You did not catch what to start. Say they can ask for a lesson by its number, the next "
-                    "lesson, free play (learn, repeat, together or jam), or a tune you make up.",
-                )
+                await asyncio.to_thread(self.coach.start, action[1], action[2] or None)
 
         tasks: set[asyncio.Task[None]] = set()
 
@@ -297,10 +358,13 @@ class Guide:
                 elif kind == "session.input_transcript.delta":
                     if self.spoken:
                         self.spoken = ""  # a new turn of yours: Reachy's last words leave the screen
+                        self.heard = ""  # and what you said before it answered is over
                     self.heard += event.get("delta", "")
                     show()
                 elif kind == "session.output_transcript.delta":
                     self.spoken += event.get("delta", "")
+                    self.said += event.get("delta", "")
+                    self.said_at = time.monotonic()
                     print(event.get("delta", ""), end="", flush=True)
                     show()
                 elif kind == "session.delegation.created":
@@ -348,9 +412,15 @@ class Guide:
                     if self.pending:
                         delegation_id, self.pending = self.pending, None
                         big, small = self.state.get("big"), self.state.get("small")
+                        how = (
+                            "they stopped it before the end"
+                            if big == "Stopped"
+                            else f"it ended like this: {big}. {small}"
+                        )
                         await tell(
                             delegation_id,
-                            f"It is over. The screen says: {big}. {small} Say that warmly, in one or two short sentences.",
+                            f"Private note, never read it aloud: {how} React to that in your own words, "
+                            "one or two short sentences, and say what could come next.",
                         )
                 if self.stop.is_set():
                     with contextlib.suppress(Exception):

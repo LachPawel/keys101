@@ -158,6 +158,7 @@ class Song:
         }
 
 
+SONG_MODES = ("learn", "listen", "watch", "together")  # the modes that need a song; a jam needs none
 MADE_UP = "made_up"  # the song Reachy makes up on the spot: one at a time, the newest replaces the last
 TUNE_CHORDS = (  # root, the bass key under it: a tune walks home through these, one per bar
     ((0, 4, 7), 48),  # C: C3 in the bass
@@ -1033,11 +1034,11 @@ class Coach:
         song = compose(self.arm.board.reaches)
         self.songs[MADE_UP] = song
         self.state.set(songs=[s.info() for s in self.songs.values()])
-        self.start(mode if mode in ("learn", "watch", "together") else "learn", MADE_UP)
+        self.start(mode if mode in SONG_MODES else "learn", MADE_UP)
         return song
 
     def start(self, mode: str, song_name: str | None, lesson: dict[str, Any] | None = None) -> None:
-        if mode != "jam" and (mode not in ("learn", "watch", "together") or song_name not in self.songs):
+        if mode != "jam" and (mode not in SONG_MODES or song_name not in self.songs):
             return
         with self.lock:
             self.stop()
@@ -1064,6 +1065,8 @@ class Coach:
                     self.jam(options.get("rounds"))
                 elif mode == "learn":
                     self.learn(song, options.get("phrases"), options.get("passes"))  # type: ignore[arg-type]
+                elif mode == "listen":
+                    self.listen(song)  # type: ignore[arg-type]
                 elif mode == "watch":
                     self.watch(song)  # type: ignore[arg-type]
                 else:
@@ -1246,6 +1249,23 @@ class Coach:
                 self.say(f"{right} of {len(phrase.notes)}", "Watch it again.", "miss")
                 self.pause(1.5)
         self.say("Song done", f"{song.title}, phrase by phrase.", "ok")
+
+    def listen(self, song: Song) -> None:
+        """The arm plays the whole song by itself: you watch and listen."""
+        total = len(song.phrases)
+        self.say("The arm plays", f"{song.title}. Sit back and listen.")
+        self.pause(0.6)
+        for p_index, phrase in enumerate(song.phrases):
+            notes = self.show_phrase(phrase, p_index, total)
+            self.say("The arm plays", f"{song.title}, phrase {p_index + 1} of {total}.")
+            for i, note in enumerate(phrase.notes):
+                self.mark(notes, i, "now")
+                self.state.john(note, 0.6)
+                self.arm_plays(note, learned=True)
+                self.mark(notes, i, "arm")
+        self.arm.away()
+        self.ears.flush()
+        self.say("That was it", f"{song.title}, played by the arm. Your turn?", "ok")
 
     def together(self, song: Song) -> None:
         """You play your part, the arm plays one note per bar the moment you play that bar's first note."""

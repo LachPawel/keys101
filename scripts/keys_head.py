@@ -4,10 +4,13 @@
 On the roadmap it sways, nods while it talks and turns toward whoever speaks: its microphone array says
 where speech comes from, and it turns its body too when that is far to the side (keys_reachy.follow).
 
-The moment a lesson or a mode starts it goes back to the saved pose and stays there: the policy's camera
-is in that head. Only the antennas keep moving. A head sent back to a pose lands a few degrees off, so the
-view is then matched by eye: the policy's own camera picture is compared with a frame of the recording
-(rig/keyboard_reference.png) and the head is nudged until the keyboard sits where it sat in training.
+The moment a lesson or a mode starts it goes back to the pose it held during the recording and stays
+there: the policy's camera is in that head. Only the antennas keep moving. This head lands up to ten degrees
+from where it is sent, and differently from every side, so it is always brought in the same way (from above
+and from one side in roll), its measured pose is compared with the recording's (`held` in reachy_pose.json)
+and the command is corrected until they agree within a degree. The command that worked is remembered for
+the next time. The policy's own camera picture is then compared with a frame of the recording
+(rig/keyboard_reference.png), and the offset is printed.
 
 Used by keys_coach.py (--head alive, the default with --voice). Nothing here can stop the game: with no
 Reachy Mini daemon, or no saved pose, the head simply stays where it is.
@@ -16,17 +19,21 @@ Reachy Mini daemon, or no saved pose, the head simply stays where it is.
 from __future__ import annotations
 
 import contextlib
+import json
 import math
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
-RAD_PER_PX = (
-    0.0023  # how far the head turns for one pixel in the policy's 640x360 view (measured: 26 px, 3.5 deg)
-)
-VIEW_OK_PX = 2.5  # the keyboard within this many pixels of the recording: good
-MATCH_TRIES = 5
+AXES = ("roll", "pitch", "yaw")
+APPROACH = {"roll": 0.15, "pitch": -0.25}  # every return comes through this offset: the play is then the same
+# Good enough: about two degrees, some fifteen pixels in the policy's view. Measured with the head brought
+# back this way, the camera-only policy pressed 24 of 24 keys right. Closer is beyond this neck's play.
+POSE_OK_RAD = 0.04
+RETURN_TRIES = 3
+COMMAND = Path(__file__).resolve().parent.parent / "outputs" / "reachy_keys_command.json"  # what worked last
 
 
 class Head:
@@ -68,14 +75,15 @@ class Head:
         daemon = self.kr.Daemon()
         started, last = time.monotonic(), None
         try:
-            while time.monotonic() - started < 4.0:
+            while time.monotonic() - started < 3.0:  # keys_reachy.follow sends it back first: let that end
                 time.sleep(0.15)
                 now = daemon.pose()
-                if time.monotonic() - started > 1.0 and last is not None and self.kr.still(last, now):
+                if time.monotonic() - started > 0.6 and last is not None and self.kr.still(last, now):
                     break
                 last = now
             self.matching = True
-            self._match_view(daemon)
+            self._return(daemon)
+            self._report_view()
         except OSError as error:
             print(f"Reachy's head: {error}", flush=True)
         finally:
@@ -91,9 +99,53 @@ class Head:
     def close(self) -> None:
         self.stop.set()
 
-    def _match_view(self, daemon: Any) -> None:
-        """Nudge the head until the keyboard sits where it sat in the recording, judged from the policy's own
-        camera. Needs an arm that can hand over that picture (the policy arm); else the saved pose is it."""
+    def _return(self, daemon: Any) -> None:
+        """Bring the head to the pose it held in the recording, and correct the command until its measured
+        pose agrees. Every try comes in through the same approach pose, so the result can be repeated."""
+        pose = self.kr.load()
+        held = pose.get("held")
+        if not held:
+            return
+
+        def off() -> dict[str, float]:
+            now = daemon.pose()["head"]
+            return {a: float(held[a]) - float(now[a]) for a in AXES}
+
+        def go(command: dict[str, float], seconds: float, settle: float) -> None:
+            daemon.goto({**pose, "head": {**pose["head"], **command}}, seconds)
+            time.sleep(seconds + settle)
+
+        if max(abs(v) for v in off().values()) < POSE_OK_RAD:
+            return  # nobody moved it
+        command = {a: float(held[a]) for a in AXES}
+        with contextlib.suppress(OSError, ValueError, KeyError, TypeError):
+            saved = json.loads(COMMAND.read_text())
+            if saved.get("held") == {a: held[a] for a in AXES}:
+                command = {a: float(saved["command"][a]) for a in AXES}
+        worst = 9.0
+        for attempt in range(RETURN_TRIES):
+            go({a: command[a] + APPROACH.get(a, 0.0) for a in AXES}, 0.5, 0.4)
+            go(command, 0.5, 0.9)
+            error = off()
+            worst = max(abs(v) for v in error.values())
+            if worst < POSE_OK_RAD or attempt == RETURN_TRIES - 1:
+                break
+            for a in AXES:  # never far from the pose itself: a wild command could strain the neck
+                command[a] = max(float(held[a]) - 0.4, min(float(held[a]) + 0.4, command[a] + 0.7 * error[a]))
+        if worst < POSE_OK_RAD:
+            with contextlib.suppress(OSError):
+                COMMAND.parent.mkdir(parents=True, exist_ok=True)
+                COMMAND.write_text(
+                    json.dumps({"held": {a: held[a] for a in AXES}, "command": command}) + "\n"
+                )
+        print(
+            f"Reachy's head: on the piano, {math.degrees(worst):.1f} degrees from the recording's pose.",
+            flush=True,
+        )
+
+    def _report_view(self) -> None:
+        """How far the keyboard sits from where it sat in the recording, in the policy's own camera picture.
+        Needs an arm that can hand over that picture (the policy arm)."""
         snap = getattr(self.arm, "snap", None)
         if snap is None:
             return
@@ -101,42 +153,20 @@ class Head:
         import keys_keyboard_check as check
         import numpy as np
 
-        if not check.REFERENCE.exists():
+        picture = snap() if check.REFERENCE.exists() else None
+        if picture is None:
             return
         reference = check.gray(cv2.imread(str(check.REFERENCE)))
-        pose = self.kr.load()
-        command = dict(pose["head"])
-        yaw_sign, last_dx = -1.0, None  # a head turned left moves the picture right; flipped if that is wrong
-        for attempt in range(MATCH_TRIES + 1):
-            picture = snap()
-            if picture is None:
-                return
-            seen = [
-                (dx, dy)
-                for dx, dy, sure in check.shifts(reference, check.gray(picture)).values()
-                if sure > 0.3
-            ]
-            if len(seen) < 2:
-                print("Reachy's head: the keyboard is hidden (hands?), the view is not checked.", flush=True)
-                return
-            dx, dy = float(np.median([s[0] for s in seen])), float(np.median([s[1] for s in seen]))
-            if abs(dx) <= VIEW_OK_PX and abs(dy) <= VIEW_OK_PX:
-                print(
-                    f"Reachy's head: on the piano, the view matches within {max(abs(dx), abs(dy)):.0f} px.",
-                    flush=True,
-                )
-                return
-            if attempt == MATCH_TRIES:
-                print(f"Reachy's head: on the piano, the view is {dx:+.0f}, {dy:+.0f} px off.", flush=True)
-                return
-            if last_dx is not None and abs(dx) > abs(last_dx) + 1.0:
-                yaw_sign = -yaw_sign  # the last sideways nudge made it worse
-            last_dx = dx
-            step = lambda px: max(-0.06, min(0.06, 0.8 * px * RAD_PER_PX))
-            command["pitch"] += step(dy)  # the picture too high: the head looks too far down
-            command["yaw"] += yaw_sign * step(dx)
-            daemon.goto({**pose, "head": command}, 0.35)
-            time.sleep(1.0)
+        seen = [
+            (dx, dy) for dx, dy, sure in check.shifts(reference, check.gray(picture)).values() if sure > 0.3
+        ]
+        if not seen:
+            return  # hands or the arm are in the way: nothing to say
+        dx, dy = float(np.median([s[0] for s in seen])), float(np.median([s[1] for s in seen]))
+        print(
+            f"Reachy's head: the keyboard is {dx:+.0f}, {dy:+.0f} px from where the policy learned it.",
+            flush=True,
+        )
 
     def _antennas(self) -> None:
         """While the head is locked, the antennas keep a slow, small sway: Reachy is still watching."""

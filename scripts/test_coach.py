@@ -361,3 +361,56 @@ def test_the_guide_understands_requests() -> None:
     assert kg.parse("surprise me, and play the bass with me", course, songs) == ("tune", "together")
     assert kg.parse("stop please", course, songs) == ("stop",)
     assert kg.parse("what is the weather", course, songs) == ("unknown",)
+
+
+def test_the_guide_follows_what_reachy_announces() -> None:
+    import keys_guide as kg
+
+    course = [{"id": f"l{i}", "title": "t", "status": "open" if i == 1 else "locked"} for i in range(1, 8)]
+    songs = dict.fromkeys(("mary", "ode", "twinkle", "alors"))
+    assert kg.decide("Lesson one, here we go!", course, songs) == ("lesson", "l1")
+    assert kg.decide("Sure thing! Ode to Joy together, I bring the bass!", course, songs) == (
+        "mode",
+        "together",
+        "ode",
+    )
+    assert kg.decide("A jam it is!", course, songs) == ("mode", "jam", "")
+    assert kg.decide("Sit back, the arm plays Ode to Joy on its own!", course, songs) == (
+        "mode",
+        "listen",
+        "ode",
+    )
+    assert kg.parse("can you play twinkle for me", course, songs) == ("mode", "listen", "twinkle")
+    assert kg.decide("I'll make up a tune for you!", course, songs) == ("tune", "learn")
+    assert kg.decide("Let's start with the chords of Alors on danse.", course, songs) == (
+        "mode",
+        "learn",
+        "alors",
+    )
+    assert kg.decide("Have you played the piano before?", course, songs) == ("talk",)
+    assert kg.decide("Mary Had a Little Lamb, or a tune I make up.", course, songs) == ("talk",)
+    assert kg.decide("Nice to meet you!", course, songs) == ("talk",)
+    offer = (
+        "'Kay. I don't really have a song with that title, but I can teach you a song if you're interested."
+    )
+    assert kg.decide(offer, course, songs) == ("talk",), "an offer starts nothing"
+    assert kg.decide("Okay, let's learn a song together.", course, songs) == ("talk",), "which song?"
+    assert kg.decide("Sure thing! Let's learn Twinkle Twinkle Little Star.", course, songs) == (
+        "mode",
+        "learn",
+        "twinkle",
+    )
+    assert kg.parse("yeah let's start from start", course, songs) == ("lesson", "l1"), (
+        "start is not Twinkle's star"
+    )
+    assert "lesson 1" in kg.brief(course)
+
+
+def test_listen_mode_the_arm_plays_the_whole_song_alone() -> None:
+    coach, _ears, state = make_coach()
+    coach.start("listen", "tiny")
+    wait_for(lambda: state.get("big") == "That was it", timeout=10)
+    wait_for(lambda: state.get("mode") == "")
+    arm_notes = [p["midi"] for p in state.get("presses") if p["who"] == "arm"]
+    assert arm_notes == [60, 62, 64], "every note of the tune, in order, by the arm alone"
+    assert [n["status"] for n in state.get("notes")] == ["arm"] * 3
