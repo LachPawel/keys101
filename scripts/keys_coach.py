@@ -351,6 +351,11 @@ class State:
             "style": "echo",
             "sound": {"you": False, "arm": False},
             "midi": False,
+            "course": [],  # the lessons: {"id", "title", "goal", "status": done | open | locked}
+            "lesson": None,  # the lesson running now
+            "hearts": None,  # hearts left in it
+            "xp": 0,
+            "days": 0,  # days in a row with a finished lesson
         }
 
     def set(self, **changes: Any) -> None:
@@ -726,7 +731,9 @@ class PolicyArm:
             return f"press key {next(k for k, m in STICKERS.items() if m == midi)}"
         return self.keys_play.task_text(POLICY_WORDS[midi])
 
-    def _policy_press(self, midi: int) -> None:
+    def _policy_press(self, midi: int, any_note: bool = False) -> None:
+        """One press by the policy. Returns once its note has sounded, or after 12 seconds. any_note: also
+        return when a different key sounds (the scorer: a wrong key is an answer too)."""
         with contextlib.suppress(Exception):  # Reachy is the policy's camera: its head goes to the saved pose
             import keys_reachy
 
@@ -737,19 +744,22 @@ class PolicyArm:
         self.tell("/start")
         deadline = time.monotonic() + (60.0 if self.first else 12.0)
         self.first = False
+        seen = self.state.press_id
         try:
             while time.monotonic() < deadline:
                 if self.ears.stop.is_set():
                     raise Stopped
                 with self.ears.lock:
                     pending = any(m == midi for m, _ in self.ears.expected)
-                if not pending:  # the note sounded
+                if not pending or (any_note and self.state.press_id != seen):  # the note sounded
                     break
                 time.sleep(0.02)
-            time.sleep(self.keys_play.HOLD_S)
+            # A policy trained on keys_scripted.py's presses lifts off the key by itself: give it the time.
+            time.sleep(self.keys_play.HOLD_S if self.prompts == "flow" else 0.7)
         finally:
             self.ears.unexpect(midi)
-            self.tell("/pause 4")  # the policy leaves its finger on the key: lift it and wait in the air
+            # The flow policy only learned presses and leaves its finger on the key: lift it. Then wait in the air.
+            self.tell("/pause 4" if self.prompts == "flow" else "/pause")
             self.at = None
             self.state.set(arm={**self.state.get("arm"), "pressing": None})
             time.sleep(0.5)
@@ -783,6 +793,71 @@ def answer_phrase(notes: list[int], style: str, board: Board, longest: int = 6) 
     return [n for n in out if n is not None]
 
 
+# The course: short lessons in a fixed order, each with one goal. A lesson opens when the one before it is
+# done. Three hearts per lesson: a wrong key costs one, and at zero the lesson stops and can be tried again.
+COURSE: list[dict[str, Any]] = [
+    {"id": "mary-1", "title": "First notes", "goal": "Follow the arm: three keys, one short phrase",
+     "mode": "learn", "song": "mary", "phrases": [0], "passes": 1},
+    {"id": "mary-2", "title": "Finish the tune", "goal": "The second phrase, then on your own",
+     "mode": "learn", "song": "mary", "phrases": [1], "passes": 2},
+    {"id": "mary-3", "title": "Play it back", "goal": "The arm plays a phrase, you repeat it",
+     "mode": "watch", "song": "mary"},
+    {"id": "mary-4", "title": "Duet", "goal": "You play Mary, the arm plays the bass",
+     "mode": "together", "song": "mary"},
+    {"id": "ode-1", "title": "A new song", "goal": "Ode to Joy, the first two phrases",
+     "mode": "learn", "song": "ode", "phrases": [0, 1], "passes": 1},
+    {"id": "ode-2", "title": "Ode duet", "goal": "The whole song with the arm on bass",
+     "mode": "together", "song": "ode"},
+    {"id": "jam", "title": "Jam", "goal": "Play three phrases: the arm answers each one",
+     "mode": "jam", "rounds": 3},
+]  # fmt: skip
+HEARTS = 3
+XP_LESSON, XP_CLEAN = 10, 5  # for finishing a lesson, and extra for finishing it without a wrong key
+PROGRESS = ROOT / "outputs" / "keys101_progress.json"
+
+
+class OutOfHearts(Exception):
+    """Three wrong keys in one lesson."""
+
+
+def load_progress(path: Path = PROGRESS) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        data = {}
+    return {
+        "done": list(data.get("done", [])),
+        "xp": int(data.get("xp", 0)),
+        "days": list(data.get("days", [])),
+    }
+
+
+def streak(days: list[str], today: str) -> int:
+    """Days in a row with a finished lesson, ending today or yesterday. days: ISO dates."""
+    import datetime
+
+    have = {datetime.date.fromisoformat(d) for d in days}
+    day = datetime.date.fromisoformat(today)
+    if day not in have:
+        day -= datetime.timedelta(days=1)
+    count = 0
+    while day in have:
+        count += 1
+        day -= datetime.timedelta(days=1)
+    return count
+
+
+def course_view(progress: dict[str, Any]) -> list[dict[str, Any]]:
+    """The lessons as the page shows them: done, open (the next one) or locked."""
+    out, unlocked = [], True
+    for lesson in COURSE:
+        done = lesson["id"] in progress["done"]
+        status = "done" if done else ("open" if unlocked else "locked")
+        out.append({"id": lesson["id"], "title": lesson["title"], "goal": lesson["goal"], "status": status})
+        unlocked = unlocked and done
+    return out
+
+
 @dataclass
 class Settings:
     passes: int = 2  # clean runs of a phrase in Learn before the next one
@@ -797,21 +872,80 @@ class Settings:
 
 class Coach:
     def __init__(
-        self, arm: Arm, ears: Ears, state: State, songs: dict[str, Song], settings: Settings
+        self,
+        arm: Arm,
+        ears: Ears,
+        state: State,
+        songs: dict[str, Song],
+        settings: Settings,
+        progress_path: Path = PROGRESS,
     ) -> None:
         self.arm, self.ears, self.state, self.songs, self.settings = arm, ears, state, songs, settings
         self.thread: threading.Thread | None = None
         self.lock = threading.Lock()
+        self.hearts: int | None = None  # None outside a lesson: free practice costs nothing
+        self.progress_path = progress_path
+        self.progress = load_progress(self.progress_path)
+        self.show_course()
+
+    # ---- the course
+
+    def show_course(self) -> None:
+        today = time.strftime("%Y-%m-%d")
+        self.state.set(
+            course=course_view(self.progress),
+            xp=self.progress["xp"],
+            days=streak(self.progress["days"], today),
+        )
+
+    def start_lesson(self, lesson_id: str) -> None:
+        view = {row["id"]: row for row in course_view(self.progress)}
+        lesson = next((entry for entry in COURSE if entry["id"] == lesson_id), None)
+        if lesson is None or view[lesson_id]["status"] == "locked":
+            return
+        self.start(lesson["mode"], lesson.get("song"), lesson)
+
+    def finish_lesson(self, lesson: dict[str, Any]) -> None:
+        clean = self.state.get("score")["wrong"] == 0
+        gained = XP_LESSON + (XP_CLEAN if clean else 0)
+        first_time = lesson["id"] not in self.progress["done"]
+        if first_time:
+            self.progress["done"].append(lesson["id"])
+        self.progress["xp"] += gained
+        today = time.strftime("%Y-%m-%d")
+        if today not in self.progress["days"]:
+            self.progress["days"].append(today)
+        with contextlib.suppress(OSError):
+            self.progress_path.parent.mkdir(parents=True, exist_ok=True)
+            self.progress_path.write_text(json.dumps(self.progress, indent=1) + "\n")
+        self.show_course()
+        nxt = next((row for row in course_view(self.progress) if row["status"] == "open"), None)
+        praise = "Not one wrong key." if clean else "Done."
+        self.say(
+            "Lesson complete",
+            f"{praise} +{gained} XP. " + (f"Next: {nxt['title']}." if nxt else "That was the whole course."),
+            "ok",
+        )
+
+    def reset_course(self) -> None:
+        self.progress = {"done": [], "xp": 0, "days": []}
+        with contextlib.suppress(OSError):
+            self.progress_path.unlink()
+        self.show_course()
+
+    def wrong(self, press: Press) -> None:
+        """A wrong key: the page shows it red, and in a lesson it costs a heart."""
+        self.state.judge(press.id, False)
+        if self.hearts is not None:
+            self.hearts -= 1
+            self.state.set(hearts=self.hearts)
+            if self.hearts <= 0:
+                raise OutOfHearts
 
     # ---- control, from the page
 
-    def start(self, mode: str, song_name: str | None) -> None:
-        modes: dict[str, Callable[[Song], None]] = {
-            "learn": self.learn,
-            "watch": self.watch,
-            "together": self.together,
-        }
-        if mode != "jam" and (mode not in modes or song_name not in self.songs):
+    def start(self, mode: str, song_name: str | None, lesson: dict[str, Any] | None = None) -> None:
+        if mode != "jam" and (mode not in ("learn", "watch", "together") or song_name not in self.songs):
             return
         with self.lock:
             self.stop()
@@ -827,9 +961,23 @@ class Coach:
                 tone="",
                 notes=[],
                 target=None,
+                lesson=lesson["id"] if lesson else None,
+                hearts=HEARTS if lesson else None,
             )
-            run = self.jam if mode == "jam" else (lambda: modes[mode](song))  # type: ignore[arg-type]
-            self.thread = threading.Thread(target=self._run, args=(run,), daemon=True)
+            self.hearts = HEARTS if lesson else None
+            options = lesson or {}
+
+            def run() -> None:
+                if mode == "jam":
+                    self.jam(options.get("rounds"))
+                elif mode == "learn":
+                    self.learn(song, options.get("phrases"), options.get("passes"))  # type: ignore[arg-type]
+                elif mode == "watch":
+                    self.watch(song)  # type: ignore[arg-type]
+                else:
+                    self.together(song)  # type: ignore[arg-type]
+
+            self.thread = threading.Thread(target=self._run, args=(run, lesson), daemon=True)
             self.thread.start()
 
     def stop(self) -> None:
@@ -839,9 +987,16 @@ class Coach:
             thread.join(timeout=5.0)
         self.thread = None
 
-    def _run(self, run: Callable[[], None]) -> None:
+    def _run(self, run: Callable[[], None], lesson: dict[str, Any] | None = None) -> None:
         try:
             run()
+            if lesson is not None:
+                self.finish_lesson(lesson)
+        except OutOfHearts:
+            self.state.set(
+                big="Out of hearts", small="Three wrong keys. Take a breath and try the lesson again.",
+                tone="miss", target=None,
+            )  # fmt: skip
         except Stopped:
             self.state.set(big="Stopped", small="Pick a song or a mode.", target=None)
         except Exception as e:  # noqa: BLE001  the page must show it, the server must keep running
@@ -853,7 +1008,8 @@ class Coach:
             self.ears.stop.clear()
             with contextlib.suppress(Exception):
                 self.arm.away()
-            self.state.set(mode="", target=None)
+            self.hearts = None
+            self.state.set(mode="", target=None, lesson=None, hearts=None)
 
     # ---- helpers
 
@@ -887,13 +1043,17 @@ class Coach:
 
     # ---- the modes
 
-    def learn(self, song: Song) -> None:
-        """Follow the finger: the arm points, you press, a mistake gets the right key played for you."""
+    def learn(self, song: Song, only: list[int] | None = None, passes: int | None = None) -> None:
+        """Follow the finger: the arm points, you press, a mistake gets the right key played for you.
+        only: just these phrases (a lesson). passes: clean runs of a phrase before the next one."""
         st = self.settings
+        passes = passes or st.passes
         total = len(song.phrases)
         for p_index, phrase in enumerate(song.phrases):
+            if only is not None and p_index not in only:
+                continue
             clean, tries = 0, 0
-            while clean < st.passes and tries < st.max_tries:
+            while clean < passes and tries < st.max_tries:
                 tries += 1
                 guided = clean == 0
                 if not guided:
@@ -927,8 +1087,8 @@ class Coach:
                             self.mark(notes, i, "ok")
                             break
                         mistakes += 1
-                        self.state.judge(press.id, False)
                         self.mark(notes, i, "miss")
+                        self.wrong(press)
                         self.say("Not that one", f"Listen: this is {midi_name(note)}. Now you.", "miss")
                         self.state.john(note)
                         self.arm_plays(note)
@@ -942,10 +1102,11 @@ class Coach:
                     )
                 else:
                     clean += 1
-                    self.say("Clean", "Again, without help." if clean < st.passes else "Next phrase.", "ok")
+                    self.say("Clean", "Again, without help." if clean < passes else "Well played.", "ok")
                 self.pause(1.2)
             self.arm.away()
-        self.say(f"You can play {song.title}", "Try it with the arm: Play together.", "ok")
+        if only is None:
+            self.say(f"You can play {song.title}", "Try it with the arm: Play together.", "ok")
 
     def watch(self, song: Song) -> None:
         """The arm plays a phrase, you play it back, MIDI checks each note."""
@@ -974,8 +1135,11 @@ class Coach:
                         break
                     ok = press.midi == note
                     right += ok
-                    self.state.judge(press.id, ok)
                     self.mark(notes, i, "ok" if ok else "miss")
+                    if ok:
+                        self.state.judge(press.id, True)
+                    else:
+                        self.wrong(press)
                 if right == len(phrase.notes):
                     self.say("Perfect", "Next phrase.", "ok")
                     self.pause(1.2)
@@ -1015,8 +1179,8 @@ class Coach:
                             self.mark(notes, i + 1, "now")
                         self.state.set(target=phrase.notes[i + 1] if i + 1 < len(notes) else None)
                         break
-                    self.state.judge(press.id, False)
                     self.mark(notes, i, "miss")
+                    self.wrong(press)
                 if i in starts:
                     if starts[i] is not None:
                         self.say("Together", f"Phrase {p_index + 1} of {total}.")
@@ -1030,10 +1194,11 @@ class Coach:
         self.say(f"You played {song.title} together", f"{s['right']} notes right, {s['wrong']} slips.", "ok")
         self.pause(0.5)
 
-    def jam(self) -> None:
-        """Call and response: you play, you stop, the arm answers."""
+    def jam(self, stop_after: int | None = None) -> None:
+        """Call and response: you play, you stop, the arm answers. stop_after: this many exchanges (a
+        lesson); else until you stop it."""
         rounds = 0
-        while True:
+        while stop_after is None or rounds < stop_after:
             self.say("Your turn", "Play a short phrase, then stop.")
             self.state.set(target=None)  # the last exchange stays on screen until you play
             self.ears.flush()
@@ -1115,6 +1280,10 @@ def make_handler(coach: Coach, state: State, ears: Ears, web: Path) -> type[Base
                 threading.Thread(
                     target=coach.start, args=(cmd.get("mode", ""), cmd.get("song")), daemon=True
                 ).start()
+            elif what == "lesson" and isinstance(cmd.get("id"), str):
+                threading.Thread(target=coach.start_lesson, args=(cmd["id"],), daemon=True).start()
+            elif what == "reset_course":
+                coach.reset_course()
             elif what == "stop":
                 threading.Thread(target=coach.stop, daemon=True).start()
             elif what == "key" and isinstance(cmd.get("midi"), int) and 21 <= cmd["midi"] <= 108:
@@ -1244,6 +1413,78 @@ def test(args: argparse.Namespace) -> None:
         print(f"Re-teach: keys_coach.py teach --only {' '.join(bad)}")
 
 
+def score(args: argparse.Namespace) -> None:
+    """Let the policy press every key it learned, `rounds` times each in a fixed shuffled order, and count on
+    MIDI how often the right key sounded first. Two models scored with the same --rounds get the same order."""
+    import random
+
+    state = State()
+    ears = Ears(state)
+    if ears.open_midi(args.midi) is None:
+        sys.exit("The scorer needs the MIDI keyboard: it says which key the policy pressed.")
+    learned = [note_midi(n) for n in args.policy_keys] if args.policy_keys else None
+    arm = PolicyArm(
+        load_board(args.board), ears, state, args.model, args.robot_port, Speeds(), args.prompts, learned
+    )
+    keys = sorted(arm.policy_keys)
+    rng = random.Random(101)
+    order = [key for _ in range(args.rounds) for key in rng.sample(keys, len(keys))]
+    rows: list[dict[str, Any]] = []
+    try:
+        for i, target in enumerate(order, start=1):
+            ears.flush()
+            asked = time.monotonic()
+            arm._policy_press(target, any_note=True)
+            heard: list[Press] = []
+            with contextlib.suppress(queue.Empty):
+                while True:
+                    heard.append(ears.queue.get_nowait())
+            first = heard[0] if heard else None
+            verdict = "no note" if first is None else ("correct" if first.midi == target else "wrong key")
+            rows.append(
+                {
+                    "asked": midi_name(target),
+                    "heard": [midi_name(p.midi) for p in heard],
+                    "verdict": verdict,
+                    "seconds": round(first.t - asked, 2) if first else None,
+                }
+            )
+            print(f"[{i}/{len(order)}] {midi_name(target):3} {verdict:9} {rows[-1]['heard']}", flush=True)
+    except KeyboardInterrupt:
+        print("\nStopped.")
+    finally:
+        arm.close()
+        ears.close()
+    if not rows:
+        return
+    right = [r for r in rows if r["verdict"] == "correct"]
+    times = [r["seconds"] for r in right if r["seconds"] is not None]
+    per_key = {
+        midi_name(k): f"{sum(r['verdict'] == 'correct' for r in rows if r['asked'] == midi_name(k))}"
+        f"/{sum(r['asked'] == midi_name(k) for r in rows)}"
+        for k in keys
+    }
+    summary = {
+        "model": args.model,
+        "label": arm.label,
+        "prompts": args.prompts,
+        "presses": len(rows),
+        "correct": len(right),
+        "wrong_key": sum(r["verdict"] == "wrong key" for r in rows),
+        "no_note": sum(r["verdict"] == "no note" for r in rows),
+        "mean_seconds_to_note": round(sum(times) / len(times), 2) if times else None,
+        "per_key": per_key,
+        "rows": rows,
+    }
+    out = ROOT / "outputs" / "keys_scores"
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"keys101_{args.model}_{time.strftime('%H%M%S')}.json"
+    path.write_text(json.dumps(summary, indent=1) + "\n")
+    print(f"\n{args.model}: {len(right)}/{len(rows)} right, {summary['wrong_key']} wrong key, "
+          f"{summary['no_note']} no note, {summary['mean_seconds_to_note']} s to the note on average")  # fmt: skip
+    print(f"Per key: {per_key}\nSaved {path}")
+
+
 # ------------------------------------------------------------------------------------------- main
 
 
@@ -1290,11 +1531,18 @@ def main(argv: list[str] | None = None) -> None:
     t.add_argument("--corners", action="store_true", help="Teach three white keys, fill in the rest")
     t.add_argument("--fill", action="store_true", help="Fill in the white keys left untaught")
     t.add_argument("--only", nargs="+", help="Re-teach these keys (or home, rest)")
+    sc = sub.add_parser(
+        "score", help="The policy presses every key it learned: how often is it the right one?"
+    )
+    sc.add_argument("--rounds", type=int, default=5, help="Presses per key")
     s = sub.add_parser("test", help="Press every taught key once and check it on MIDI")
     s.add_argument("--only", nargs="+", help="Only these keys")
     args = parser.parse_args(argv)
     if args.command == "teach":
         teach(args)
+        return
+    if args.command == "score":
+        score(args)
         return
     if args.command == "test":
         test(args)

@@ -87,6 +87,25 @@ main { max-width: 1600px; margin: auto; padding: 0 48px 40px; display: grid; gri
 .panel { padding-top: 30px; min-width: 0; }
 .card { padding: 18px 0; border-bottom: 1px solid var(--line); }
 .label { color: #767b67; font: 500 9px/1.4 ui-monospace, monospace; letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 10px; }
+.course-card .label { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.stats { text-transform: none; letter-spacing: 0; font: 11px/1.4 -apple-system, BlinkMacSystemFont, sans-serif; color: var(--muted); white-space: nowrap; }
+.stats b { color: var(--text); font-size: 13px; }
+.hearts { margin-right: 10px; letter-spacing: 2px; font-size: 14px; color: var(--miss); }
+.hearts i { font-style: normal; }
+.hearts i.lost { color: #dcd8c9; }
+.course { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.course button { width: 100%; text-align: left; display: grid; grid-template-columns: 26px 1fr; column-gap: 10px; align-items: center; padding: 9px 12px; }
+.course .mark { grid-row: span 2; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font: 600 12px/1 ui-monospace, monospace; background: #ece8d9; color: #6f745f; }
+.course b { font-size: 13px; }
+.course small { font-size: 10px; color: var(--muted); line-height: 1.3; }
+.course .done .mark { background: var(--accent); color: #fff; }
+.course .open { border-color: var(--accent); }
+.course .open .mark { background: var(--accent-soft); color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.course .locked { opacity: 0.5; cursor: default; }
+.course .locked:hover { background: var(--paper); border-color: #d8d4c6; }
+.course .running { border-color: var(--warm); background: var(--warm-soft); box-shadow: inset 0 0 0 1px var(--warm); }
+.quiet { border: 0; background: none; padding: 6px 0 0; font-size: 10px; color: var(--muted); text-decoration: underline; }
+.quiet:hover { background: none; color: var(--text); }
 .songs { display: grid; gap: 6px; }
 .songs button { text-align: left; display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 9px 12px; }
 .songs button small { color: var(--muted); font-size: 10px; white-space: nowrap; }

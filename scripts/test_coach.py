@@ -171,12 +171,16 @@ def test_ears_tell_the_arm_from_you() -> None:
 # ---------------------------------------------------------------- the modes, with a simulated arm
 
 
-def make_coach(**settings: float) -> tuple[kc.Coach, kc.Ears, kc.State]:
+def make_coach(tmp_path=None, **settings: float) -> tuple[kc.Coach, kc.Ears, kc.State]:
+    import tempfile
+    from pathlib import Path
+
     state = kc.State()
     ears = kc.Ears(state)
     arm = kc.SimArm(ears, state, speed=50.0)
     songs = {"tiny": kc.parse_lesson("title: Tiny\nyou: C4 D4 | E4\narm: C3 | G3\n", "tiny")}
-    coach = kc.Coach(arm, ears, state, songs, kc.Settings(**settings))
+    folder = Path(tmp_path or tempfile.mkdtemp())  # never the real progress file
+    coach = kc.Coach(arm, ears, state, songs, kc.Settings(**settings), folder / "progress.json")
     return coach, ears, state
 
 
@@ -267,3 +271,60 @@ def test_server_serves_the_page_and_takes_commands() -> None:
             urllib.request.urlopen(base + "/../keys_board.json")
     finally:
         server.shutdown()
+
+
+def test_course_opens_one_lesson_at_a_time_and_counts_hearts(tmp_path, monkeypatch) -> None:
+    lessons = [
+        {"id": "a", "title": "A", "goal": "g", "mode": "learn", "song": "tiny", "phrases": [0], "passes": 1},
+        {"id": "b", "title": "B", "goal": "g", "mode": "together", "song": "tiny"},
+    ]
+    monkeypatch.setattr(kc, "COURSE", lessons)
+    coach, ears, state = make_coach(tmp_path, hesitate_s=0.05)
+    assert [row["status"] for row in state.get("course")] == ["open", "locked"]
+    coach.start_lesson("b")  # locked: nothing starts
+    time.sleep(0.1)
+    assert state.get("mode") == ""
+
+    # Three wrong keys end the lesson, and it stays open.
+    coach.start_lesson("a")
+    wait_for(lambda: state.get("target") == 60)
+    for _ in range(3):
+        ears.key_down(70)
+        time.sleep(0.4)
+    wait_for(lambda: state.get("mode") == "")
+    assert state.get("big") == "Out of hearts"
+    assert [row["status"] for row in state.get("course")] == ["open", "locked"]
+
+    # Played right, it is done, pays XP with the bonus for a clean run, and opens the next lesson.
+    coach.start_lesson("a")
+    wait_for(lambda: state.get("mode") == "learn" and state.get("hearts") == 3)
+    play_when_asked(ears, state)
+    wait_for(lambda: state.get("mode") == "", timeout=15)
+    assert state.get("big") == "Lesson complete"
+    assert [row["status"] for row in state.get("course")] == ["done", "open"]
+    assert state.get("xp") == kc.XP_LESSON + kc.XP_CLEAN and state.get("days") == 1
+
+    # Progress survives a restart, and reset clears it.
+    again, _, state2 = make_coach(tmp_path)
+    assert [row["status"] for row in state2.get("course")] == ["done", "open"]
+    again.reset_course()
+    assert [row["status"] for row in state2.get("course")] == ["open", "locked"] and state2.get("xp") == 0
+
+
+def test_streak_counts_days_in_a_row() -> None:
+    assert kc.streak([], "2026-11-22") == 0
+    assert kc.streak(["2026-11-22"], "2026-11-22") == 1
+    assert kc.streak(["2026-11-20", "2026-11-21"], "2026-11-22") == 2  # yesterday still counts
+    assert kc.streak(["2026-11-19", "2026-11-21", "2026-11-22"], "2026-11-22") == 2
+    assert kc.streak(["2026-11-19"], "2026-11-22") == 0
+
+
+def test_the_real_course_is_playable() -> None:
+    songs = kc.load_songs()
+    ids = [lesson["id"] for lesson in kc.COURSE]
+    assert len(ids) == len(set(ids))
+    for lesson in kc.COURSE:
+        assert lesson["mode"] in ("learn", "watch", "together", "jam")
+        if lesson["mode"] != "jam":
+            song = songs[lesson["song"]]
+            assert all(0 <= i < len(song.phrases) for i in lesson.get("phrases", []))

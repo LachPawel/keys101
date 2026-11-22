@@ -16,6 +16,7 @@ let state = null;
 let selected = null; // the song picked on this page
 let drawnRange = "";
 let drawnSongs = "";
+let drawnCourse = "";
 let lastPress = 0;
 const judged = new Set();
 let lastJohn = 0;
@@ -146,6 +147,36 @@ function renderSongs(songs) {
   }
 }
 
+/** The course: one row per lesson. Done lessons can be replayed, the next one is open, the rest are locked. */
+function renderCourse(next) {
+  const key = JSON.stringify([next.course, next.lesson]);
+  if (key !== drawnCourse) {
+    drawnCourse = key;
+    const list = $("course");
+    list.innerHTML = "";
+    next.course.forEach((lesson, i) => {
+      const item = document.createElement("li");
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = `${lesson.status}${next.lesson === lesson.id ? " running" : ""}`;
+      b.disabled = lesson.status === "locked";
+      const mark = lesson.status === "done" ? "\u2713" : String(i + 1);
+      b.innerHTML = `<span class="mark">${mark}</span><b>${lesson.title}</b><small>${lesson.goal}</small>`;
+      b.addEventListener("click", () => {
+        ensureAudio();
+        send({ do: "lesson", id: lesson.id });
+      });
+      item.appendChild(b);
+      list.appendChild(item);
+    });
+  }
+  // Hearts only show inside a lesson: free practice costs nothing.
+  const hearts = $("hearts");
+  hearts.innerHTML = next.hearts == null ? "" : [0, 1, 2].map((i) => `<i class="${i < next.hearts ? "" : "lost"}">\u2665\uFE0E</i>`).join("");
+  $("xp").textContent = next.xp;
+  $("days").textContent = next.days;
+}
+
 function render(next) {
   const was = state;
   state = next;
@@ -163,7 +194,9 @@ function render(next) {
   $("chip-midi").classList.toggle("on", next.midi);
   $("chip-midi").textContent = next.midi ? "MIDI keyboard" : "No MIDI: click the keys";
 
-  $("eyebrow").textContent = next.mode ? `${MODE_WORD[next.mode]}${next.song ? ` · ${next.song.title}` : ""}` : "Keys101";
+  const lessonAt = next.course.findIndex((lesson) => lesson.id === next.lesson);
+  if (lessonAt >= 0) $("eyebrow").textContent = `Lesson ${lessonAt + 1} · ${next.course[lessonAt].title}`;
+  else $("eyebrow").textContent = next.mode ? `${MODE_WORD[next.mode]}${next.song ? ` · ${next.song.title}` : ""}` : "Keys101";
   $("big").textContent = next.big;
   $("big").dataset.tone = next.tone || "";
   $("small").textContent = next.small;
@@ -200,6 +233,7 @@ function render(next) {
   $("streak").textContent = next.score.streak;
   $("where").textContent = next.phrases ? `Phrase ${next.phrase + 1} of ${next.phrases}` : "";
 
+  renderCourse(next);
   john.follow(was, next);
 }
 
@@ -265,6 +299,9 @@ document.querySelectorAll(".modes button").forEach((b) => {
   });
 });
 $("stop").addEventListener("click", () => send({ do: "stop" }));
+$("reset").addEventListener("click", () => {
+  if (confirm("Start the course over? Your XP and finished lessons are cleared.")) send({ do: "reset_course" });
+});
 $("style").addEventListener("change", (event) => send({ do: "style", style: event.target.value }));
 window.addEventListener("keydown", (event) => {
   if (event.repeat || event.metaKey || event.ctrlKey || event.target.tagName === "SELECT") return;

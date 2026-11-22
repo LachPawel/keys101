@@ -42,13 +42,21 @@
       </section>
 
       <aside class="panel">
+        <section class="card course-card">
+          <p class="label">Your course
+            <span class="stats"><span class="hearts" id="hearts" aria-label="Hearts left"></span><b id="xp">0</b> XP <span class="sep">·</span> <b id="days">0</b> day streak</span>
+          </p>
+          <ol class="course" id="course"></ol>
+          <button type="button" id="reset" class="quiet">Start the course over</button>
+        </section>
+
         <section class="card">
-          <p class="label">Song</p>
+          <p class="label">Free practice: song</p>
           <div class="songs" id="songs"></div>
         </section>
 
         <section class="card">
-          <p class="label">Practise</p>
+          <p class="label">Free practice: how</p>
           <div class="modes">
             <button type="button" data-mode="learn"><b>Learn</b><small>The arm shows you each key</small></button>
             <button type="button" data-mode="watch"><b>Watch and repeat</b><small>It plays a phrase, you play it back</small></button>

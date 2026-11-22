@@ -8,6 +8,8 @@ in Berlin (November 2026) on top of the SO-101 Piano Teacher below.
 - **Watch and repeat:** the arm plays a phrase, you play it back. MIDI checks every note.
 - **Play together:** you play your part, the arm plays its part with you. You lead, it follows.
 - **Jam:** play a short phrase and stop. The arm answers it, echoed or upside down.
+- **Your course:** seven short lessons in order, from three notes to a duet. Three hearts per lesson, XP for
+  each one you finish, and the next lesson opens when the last is done.
 
 ```bash
 R="uv run --with-requirements scripts/requirements-keys.txt"

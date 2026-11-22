@@ -162,6 +162,22 @@ Keys101 sends "press E3", the words this dataset was recorded with. The policy p
 together and the melody in Watch and repeat. `--bass poses` plays the bass from the taught poses instead:
 instant, for when the policy is slow. (The older `flow` policy runs with `--model flow --prompts flow`.)
 
+## 9. Compare the two models
+
+The policy presses every key it learned, five times each, in the same shuffled order for both models. MIDI
+says which key sounded first.
+
+```bash
+$R scripts/keys_coach.py --model keys101 score --rounds 5
+```
+
+```bash
+$R scripts/keys_coach.py --model keys101-cam score --rounds 5
+```
+
+Each prints how many of the 60 presses hit the right key, wrong keys, missing notes, the seconds from the
+request to the note, and the count per key. The full log goes to `outputs/keys_scores/`.
+
 ## If something goes wrong
 
 - The model misses keys: the rig moved, or Reachy's head is not where it was (compare with
