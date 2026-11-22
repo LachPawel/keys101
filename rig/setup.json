@@ -1,8 +1,8 @@
 {
-  "saved": "2026-11-22T09:16:46+0100",
+  "saved": "2026-11-22T09:32:20+0100",
   "place": "HackLab #2, CIC Berlin, table by the window",
   "layout": {
-    "keyboard": "Arturia MicroLab, 25 keys C3-C5, octave buttons at default (middle C = C4 = MIDI 60). Stickers 1-6 on C4 D4 E4 F4 G4 A4.",
+    "keyboard": "Arturia MicroLab, 25 keys C3-C5, octave buttons at default (middle C = C4 = MIDI 60). Stickers 1-6 on the bass, C3 D3 E3 F3 G3 A3 (white keys 1 to 6 from the left, seen from the player's side), stickers 7-12 on the melody, C4 D4 E4 F4 G4 A4 (white keys 8 to 13). See keys_layout.json.",
     "arm": "SO-101 follower on the player's side of the keyboard (away from the window), reaching over the keys toward Reachy.",
     "reachy": "Reachy Mini behind the keyboard on the window side, facing the player, centred on the sticker keys, about 25-30 cm from the keyboard's back edge.",
     "tape": "Tape down the keyboard, the arm's base and Reachy's base before teaching poses. Mark their corners on the table so they can be put back."
@@ -10,22 +10,22 @@
   "reachy_head": {
     "file": "reachy_pose.json",
     "command": {
-      "x": 0.011999696304767098,
-      "y": 9.206356161532009e-08,
-      "z": -8.790796722198471e-08,
-      "roll": -0.17022527213392435,
-      "pitch": 0.21218167559465034,
-      "yaw": 0.11030874214475729
+      "x": -1.1308083323890994e-09,
+      "y": 1.285248024326946e-09,
+      "z": -6.88867339473237e-10,
+      "roll": -0.14999992444943863,
+      "pitch": 0.3599999833998962,
+      "yaw": -0.06000001309763975
     },
     "settles_at": {
-      "x": -0.0022566759096144945,
-      "y": 0.004676907719259644,
-      "z": -0.0041118216312081846,
-      "roll": -0.002587479120716911,
-      "pitch": 0.48550439313145033,
-      "yaw": -0.06792037583330204
+      "x": -0.006559700955548918,
+      "y": 0.004534825812057714,
+      "z": -0.004416573356901904,
+      "roll": 0.08886455269489449,
+      "pitch": 0.5050107134055419,
+      "yaw": -0.16357180612889566
     },
-    "note": "The head droops under its weight and has 2 to 3 degrees of play: 'command' is what is sent, 'settles_at' is where it really is in the reference view. Set it once and do not move it during recording and the demo. keys_reachy.py lock leaves it alone while it is still there, and after a restart brings it back to within about 2 to 3 degrees. Angles in radians, positions in metres."
+    "note": "Saved after the Reachy app restarted. The head has 5 to 10 degrees of play on re-command (most in roll), so set it once and leave it: keep Reachy powered and its app running from recording to the end of the demo. lock approaches from above and from the +roll side and sends nothing while the head is still in place. Angles in radians, positions in metres."
   },
   "camera": {
     "name": "Reachy Mini Camera (UVC)",

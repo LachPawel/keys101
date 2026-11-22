@@ -5,6 +5,7 @@ uv run pytest scripts/test_coach.py -q
 
 from __future__ import annotations
 
+import itertools
 import json
 import threading
 import time
@@ -98,7 +99,49 @@ def test_board_falls_back_to_the_sticker_poses(tmp_path) -> None:
     poses = {"home": pose(0), **{f"{k}_{i}": pose(i) for i in range(1, 7) for k in ("above", "down")}}
     (tmp_path / "p.json").write_text(json.dumps({"poses": poses}))
     board = kc.load_board(tmp_path / "none.json", tmp_path / "p.json")
-    assert board.reach == [60, 62, 64, 65, 67, 69]
+    assert board.reach == [48, 50, 52, 53, 55, 57]  # the bass: C3 D3 E3 F3 G3 A3
+
+
+def test_twelve_sticker_layout(tmp_path) -> None:
+    import keys_scripted
+    import numpy as np
+
+    names = ["C3", "D3", "E3", "F3", "G3", "A3", "C4", "D4", "E4", "F4", "G4", "A4"]
+    (tmp_path / "layout.json").write_text(json.dumps({"names": names}))
+    assert keys_scripted.read_layout(tmp_path / "layout.json") == names
+    stickers = kc.read_stickers(tmp_path / "layout.json")
+    assert stickers[1] == 48 and stickers[7] == 60 and stickers[12] == 69
+    assert kc.read_stickers(tmp_path / "none.json") == {1: 48, 2: 50, 3: 52, 4: 53, 5: 55, 6: 57}
+    # The repository's own layout is the twelve Keys101 keys, and every bass note of every lesson is in it.
+    assert keys_scripted.read_layout() == names
+    learned = set(kc.read_stickers().values())
+    for song in kc.load_songs().values():
+        for phrase in song.phrases:
+            for bar in phrase.bars:
+                assert bar.arm is None or bar.arm in learned or song.name == "fur_elise", song.name
+
+    # Poses for twelve stickers become a twelve-key board.
+    poses = {f"{k}_{i}": pose(i) for i in range(1, 13) for k in ("above", "down")}
+    (tmp_path / "p12.json").write_text(json.dumps({"poses": poses}))
+    board = kc.load_board(tmp_path / "none.json", tmp_path / "p12.json", stickers)
+    assert board.reach == sorted(stickers.values())
+
+    # A tour makes every jump between two keys, and every repeat, exactly once.
+    keys = tuple(range(1, 13))
+    tour = keys_scripted.all_pairs_tour(keys, np.random.default_rng(0))
+    assert len(tour) == 12 * 12 + 1 and tour[0] == tour[-1] == 1
+    assert set(itertools.pairwise(tour)) == {(a, b) for a in keys for b in keys}
+    sequence = keys_scripted.tour_sequence(keys, 600, np.random.default_rng(1))
+    counts = [sequence.count(k) for k in keys]
+    assert len(sequence) == 600 and min(counts) >= 45 and max(counts) <= 55
+
+
+def test_policy_prompts_match_the_recording() -> None:
+    arm = kc.PolicyArm.__new__(kc.PolicyArm)
+    arm.prompts = "notes"
+    assert arm.task(52) == "press E3"
+    arm.prompts = "scripted"
+    assert arm.task(52) == "press key 3"
 
 
 def test_answers() -> None:

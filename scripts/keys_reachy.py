@@ -239,9 +239,11 @@ def still(a: dict[str, Any], b: dict[str, Any]) -> bool:
 # Precise lock, for a pose that keeps where the head settled (`held`). The head has play in it: told the same
 # pose, it settles 2 to 3 degrees apart depending on the side it came from (10 to 50 pixels in the camera).
 # So the best lock is no move at all: while the head is still where it was saved (or where the last lock left
-# it), nothing is sent. Otherwise it comes from the same side every time (from above, tilted up by this much,
-# then down onto the pose) and the command is nudged toward `held` a few times.
+# it), nothing is sent. Otherwise it comes from the same side every time (from above and from the +roll side,
+# then onto the pose). It still lands a few degrees off: keep Reachy powered and its app running.
 APPROACH_RAD = 0.25
+APPROACH_ROLL_RAD = 0.15  # and from the same side in roll, which has the most play
+CORRECT_MAX_RAD = 0.12  # the most the command is nudged from the saved one, per axis
 SETTLE_TOL_RAD = 0.01  # about half a degree: a few pixels in the policy's 640x360 view
 _settled: tuple[str, dict[str, Any]] | None = None  # (the saved pose, where the last lock left the head)
 
@@ -250,35 +252,60 @@ def settle_error(now: dict[str, Any], held: dict[str, Any]) -> dict[str, float]:
     return {a: wrap(float(held[a]) - float(now[a])) for a in ("roll", "pitch", "yaw")}
 
 
-def lock_precisely(daemon: Daemon, pose: dict[str, Any], tries: int = 4) -> bool:
+def lock_precisely(daemon: Daemon, pose: dict[str, Any], tries: int = 0) -> bool:
     global _settled
     key = json.dumps(pose, sort_keys=True)
     held = pose["held"]
     now = daemon.pose()
     for spot in (held, _settled[1] if _settled is not None and _settled[0] == key else None):
-        if spot is not None and max(abs(v) for v in settle_error(now["head"], spot).values()) < SETTLE_TOL_RAD:
+        if (
+            spot is not None
+            and max(abs(v) for v in settle_error(now["head"], spot).values()) < SETTLE_TOL_RAD
+        ):
             return True  # nobody moved it: leave it exactly where it is
-    above = {**pose, "head": {**pose["head"], "pitch": float(pose["head"]["pitch"]) - APPROACH_RAD}}
+    above = {
+        **pose,
+        "head": {
+            **pose["head"],
+            "pitch": float(pose["head"]["pitch"]) - APPROACH_RAD,
+            "roll": float(pose["head"]["roll"]) + APPROACH_ROLL_RAD,
+        },
+    }
     travel = travel_s(now, above)
     daemon.goto(above, travel)
     time.sleep(travel + 0.1)
-    command = {**pose, "head": dict(pose["head"])}
-    daemon.goto(command, 0.6)
-    time.sleep(1.1)
-    worst = math.inf
-    for _ in range(tries):
+    saved = {**pose, "head": dict(pose["head"])}
+    command = saved
+    best: tuple[float, dict[str, Any]] | None = None
+    for attempt in range(tries + 1):
+        daemon.goto(command, 0.6)
+        time.sleep(1.8)  # the head creeps for a while after a move: measure only once it has stopped
         error = settle_error(daemon.pose()["head"], held)
         worst = max(abs(v) for v in error.values())
-        if worst < SETTLE_TOL_RAD:
+        if best is None or worst < best[0]:
+            best = (worst, command)
+        if worst < SETTLE_TOL_RAD or attempt == tries:
             break
+        # Small steps, never more than CORRECT_MAX_RAD from the saved command: a bigger push overshoots.
         command = {
             **command,
-            "head": {**command["head"], **{a: command["head"][a] + 0.8 * e for a, e in error.items()}},
+            "head": {
+                **command["head"],
+                **{
+                    a: max(
+                        -CORRECT_MAX_RAD,
+                        min(CORRECT_MAX_RAD, command["head"][a] + 0.5 * e - saved["head"][a]),
+                    )
+                    + saved["head"][a]
+                    for a, e in error.items()
+                },
+            },
         }
-        daemon.goto(command, 0.4)
-        time.sleep(0.9)
-    else:
-        worst = max(abs(v) for v in settle_error(daemon.pose()["head"], held).values())
+    assert best is not None
+    worst, command = best
+    if command is not saved or worst >= SETTLE_TOL_RAD:
+        daemon.goto(command, 0.6)
+        time.sleep(1.5)
     _settled = (key, daemon.pose()["head"])
     if worst >= SETTLE_TOL_RAD:
         print(f"Reachy: the head settled {math.degrees(worst):.1f} degrees from the saved view.")

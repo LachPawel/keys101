@@ -48,15 +48,20 @@ from urllib.parse import unquote, urlsplit
 ROOT = Path(__file__).resolve().parent.parent
 LESSONS = Path(__file__).with_name("lessons")
 BOARD = ROOT / "keys_board.json"
-POSES = ROOT / "keys_poses.json"  # the six sticker keys of keys_scripted.py, used when there is no board yet
+POSES = ROOT / "keys_poses.json"  # the sticker keys of keys_scripted.py, used when there is no board yet
+LAYOUT = ROOT / "keys_layout.json"  # the note under every sticker, shared with keys_scripted.py
 WEB = ROOT / "web"
 
 NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 FLATS = {"Db": "C#", "Eb": "D#", "Gb": "F#", "Ab": "G#", "Bb": "A#"}
 SYLLABLE = {0: "do", 2: "re", 4: "mi", 5: "fa", 7: "sol", 9: "la", 11: "si"}  # what John sings on each key
 # The stickers 1 to 6 of the policy's training: C4 D4 E4 F4 G4 A4. The learned policy can press only these.
-STICKERS = {1: 60, 2: 62, 3: 64, 4: 65, 5: 67, 6: 69}
+# The sticker keys, which are also the keys the policy learns. keys_layout.json names them in sticker order:
+# for Keys101 the bass C3 to A3 (1 to 6, the left hand it plays with you) and the melody C4 to A4 (7 to 12,
+# which it shows you). Without the file: the six bass keys. Filled in below, once notes can be read.
+STICKERS: dict[int, int] = {1: 48, 2: 50, 3: 52, 4: 53, 5: 55, 6: 57}
 LOWEST = 48  # C3: the auto arm part stays at or above it
+# The older `flow` policy (--prompts flow) learned the six keys from middle C, named do re mi fa sol la.
 POLICY_WORDS = {60: "do", 62: "re", 64: "mi", 65: "fa", 67: "sol", 69: "la"}
 
 Pose = dict[str, float]
@@ -78,6 +83,13 @@ def note_midi(name: str) -> int:
     return NAMES.index(pitch) + 12 * (octave + 1)
 
 
+def read_stickers(path: Path = LAYOUT) -> dict[int, int]:
+    """Sticker number -> MIDI note, from keys_layout.json; the six bass keys without it."""
+    if not path.exists():
+        return dict(STICKERS)
+    return {i: note_midi(name) for i, name in enumerate(json.loads(path.read_text())["names"], start=1)}
+
+
 def midi_name(midi: int) -> str:
     return f"{NAMES[midi % 12]}{midi // 12 - 1}"
 
@@ -88,6 +100,10 @@ def is_black(midi: int) -> bool:
 
 def syllable(midi: int) -> str:
     return SYLLABLE.get(midi % 12, "la")
+
+
+if "pytest" not in sys.modules:  # the offline tests use the six bass keys
+    STICKERS = read_stickers()
 
 
 # ------------------------------------------------------------------------------------------- songs
@@ -229,21 +245,22 @@ class Board:
         return min(self.reach, key=lambda m: (abs(m - midi), m))
 
 
-def load_board(board_path: Path = BOARD, poses_path: Path = POSES) -> Board:
-    """keys_board.json from `teach`, else the six sticker keys taught for keys_scripted.py."""
+def load_board(
+    board_path: Path = BOARD, poses_path: Path = POSES, stickers: dict[int, int] | None = None
+) -> Board:
+    """keys_board.json from `teach`, else the sticker keys taught for keys_scripted.py (keys_poses.json)."""
     if board_path.exists():
         data = json.loads(board_path.read_text())
         keys = {note_midi(name): poses for name, poses in data.get("keys", {}).items()}
         return Board(keys=keys, home=data.get("home"), rest=data.get("rest"))
+    board = Board()
     if poses_path.exists():
         poses = json.loads(poses_path.read_text())["poses"]
-        keys = {
-            midi: {"above": poses[f"above_{key}"], "down": poses[f"down_{key}"]}
-            for key, midi in STICKERS.items()
-            if f"above_{key}" in poses and f"down_{key}" in poses
-        }
-        return Board(keys=keys, home=poses.get("home"), rest=poses.get("rest"))
-    return Board()
+        for key, midi in (stickers or STICKERS).items():
+            if f"above_{key}" in poses and f"down_{key}" in poses:
+                board.keys[midi] = {"above": poses[f"above_{key}"], "down": poses[f"down_{key}"]}
+        board.home, board.rest = poses.get("home"), poses.get("rest")
+    return board
 
 
 def save_board(board: Board, path: Path = BOARD, robot_id: str = "") -> None:
@@ -627,7 +644,8 @@ class ScriptedArm:
 
 
 class PolicyArm:
-    """The learned SmolVLA policy presses the six sticker keys it was trained on (C4 to A4); everything else
+    """The learned SmolVLA policy presses the six sticker keys it was trained on (C3 to A3, the bass, with
+    --prompts scripted; C4 to A4 for the older flow policy); everything else
     (pointing, the keys it never learned, fast notes in Play together) moves from taught poses. One
     `lerobot-rollout` session owns the arm the whole time: keys_rollout.py adds /pause and /goto to it."""
 
@@ -641,7 +659,8 @@ class PolicyArm:
         model: str,
         port: str,
         speeds: Speeds,
-        prompts: str = "flow",
+        prompts: str = "notes",
+        policy_keys: list[int] | None = None,
     ) -> None:
         import keys_play
 
@@ -649,7 +668,10 @@ class PolicyArm:
             sys.exit("The arm has no taught keys: run `keys_coach.py teach` first.")
         self.board, self.ears, self.state, self.speeds = board, ears, state, speeds
         self.keys_play = keys_play
-        self.prompts = prompts  # flow: "play mi, the third key" (teleop data); scripted: "press key 3"
+        # The words the policy was trained on. notes: "press E3" (keys_scripted.py record --names);
+        # scripted: "press key 3"; flow: "play mi, the third key" (the older teleop data).
+        self.prompts = prompts
+        self.policy_keys = set(policy_keys or (POLICY_WORDS if prompts == "flow" else STICKERS.values()))
         task = keys_play.task_text("do")
         command, self.label = keys_play.build_command(model, task, 0.0, port, None, True, 60, 1.0)
         command.append("--interactive=true")
@@ -685,7 +707,7 @@ class PolicyArm:
         self.at = midi
 
     def press(self, midi: int, learned: bool = False) -> None:
-        if learned and midi in POLICY_WORDS:
+        if learned and midi in self.policy_keys:
             self._policy_press(midi)
         elif self.board.reaches(midi):
             self.point(midi)
@@ -698,6 +720,8 @@ class PolicyArm:
 
     def task(self, midi: int) -> str:
         """The words the policy was trained on for this key."""
+        if self.prompts == "notes":  # keys_scripted.py record --names
+            return f"press {midi_name(midi)}"
         if self.prompts == "scripted":  # keys_scripted.py record
             return f"press key {next(k for k, m in STICKERS.items() if m == midi)}"
         return self.keys_play.task_text(POLICY_WORDS[midi])
@@ -766,6 +790,9 @@ class Settings:
     hesitate_s: float = 2.5  # second run of Learn: the arm points only if you wait this long
     phrase_end_s: float = 1.5  # Jam: this much silence ends your phrase
     repeat_timeout_s: float = 12.0  # Watch and repeat: the longest wait for your answer
+    bass_learned: bool = (
+        True  # Play together: the policy plays the bass (slower), else taught poses (instant)
+    )
 
 
 class Coach:
@@ -993,7 +1020,7 @@ class Coach:
                 if i in starts:
                     if starts[i] is not None:
                         self.say("Together", f"Phrase {p_index + 1} of {total}.")
-                        self.arm_plays(starts[i])  # type: ignore[arg-type]
+                        self.arm_plays(starts[i], learned=self.settings.bass_learned)  # type: ignore[arg-type]
                     k += 1
                     nxt = next((n for n in upcoming[k:] if n is not None), None)
                     if nxt is not None:
@@ -1226,13 +1253,19 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--arm", choices=("sim", "scripted", "policy"), default="sim")
     parser.add_argument(
-        "--model", default="flow", help="The policy for --arm policy (see keys_play.py MODELS)"
+        "--model", default="keys101", help="The policy for --arm policy (see keys_play.py MODELS)"
     )
     parser.add_argument(
         "--prompts",
-        choices=("flow", "scripted"),
-        default="flow",
-        help='The policy\'s task words: flow "play mi, the third key", scripted "press key 3"',
+        choices=("notes", "scripted", "flow"),
+        default="notes",
+        help='The policy\'s task words: notes "press E3", scripted "press key 3", flow "play mi, the third key"',
+    )
+    parser.add_argument(
+        "--policy-keys",
+        nargs="+",
+        help="The keys the policy may press (default: every sticker key in keys_layout.json). "
+        "Fewer, e.g. C3 D3 E3 F3 G3 A3, leaves the others to the taught poses",
     )
     parser.add_argument("--robot-port", default="/dev/tty.usbmodem5B415331661")
     parser.add_argument("--robot-id", default="workshop_so101")
@@ -1241,6 +1274,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--port", type=int, default=8780)
     parser.add_argument("--range", nargs=2, default=("C3", "C5"), metavar=("LOW", "HIGH"), help="Keys drawn")
     parser.add_argument("--speed", type=float, default=120.0, help="Scripted moves between keys, deg/s")
+    parser.add_argument(
+        "--bass",
+        choices=("policy", "poses"),
+        default="policy",
+        help="Play together: the learned policy plays the bass, or the taught poses (faster)",
+    )
     parser.add_argument("--sound", choices=("auto", "all", "arm", "none"), default="auto",
                         help="What the page plays itself. auto: the arm's notes without a robot, your clicks without MIDI")  # fmt: skip
     sub = parser.add_subparsers(dest="command")
@@ -1271,7 +1310,8 @@ def main(argv: list[str] | None = None) -> None:
     if args.arm == "scripted":
         arm = ScriptedArm(board, ears, state, args.robot_port, args.robot_id, speeds)
     elif args.arm == "policy":
-        arm = PolicyArm(board, ears, state, args.model, args.robot_port, speeds, args.prompts)
+        learned = [note_midi(n) for n in args.policy_keys] if args.policy_keys else None
+        arm = PolicyArm(board, ears, state, args.model, args.robot_port, speeds, args.prompts, learned)
     else:
         arm = SimArm(ears, state, board if board.reach else None)
     lo, hi = note_midi(args.range[0]), note_midi(args.range[1])
@@ -1291,7 +1331,7 @@ def main(argv: list[str] | None = None) -> None:
         big="Pick a song",
         small="Then choose how to practise it.",
     )
-    coach = Coach(arm, ears, state, songs, Settings())
+    coach = Coach(arm, ears, state, songs, Settings(bass_learned=args.bass == "policy"))
     web = WEB.resolve()
     try:
         server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(coach, state, ears, web))

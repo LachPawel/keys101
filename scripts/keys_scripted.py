@@ -58,6 +58,20 @@ from keys_common import (
 
 Pose = dict[str, float]
 
+# Keys101 plays more than six keys. keys_layout.json in the repository root names the note under every
+# sticker, in sticker order. With it, this script teaches, tests and records that many keys and labels each
+# press with its note ("press E3"). Without it: the six sticker keys, labelled "press key 3".
+LAYOUT = Path(__file__).resolve().parent.parent / "keys_layout.json"
+
+
+def read_layout(path: Path = LAYOUT) -> list[str]:
+    return [str(name) for name in load_json(path)["names"]] if path.exists() else []
+
+
+LAYOUT_NAMES = [] if "pytest" in sys.modules else read_layout()  # the offline tests use the six keys
+if LAYOUT_NAMES:
+    KEYS = tuple(range(1, len(LAYOUT_NAMES) + 1))
+
 DEFAULT_CAMERAS = Path(__file__).with_name("keys_cameras.json")
 DEFAULT_PHRASES = Path(__file__).with_name("phrases") / "song.txt"
 SONGS = Path(__file__).with_name("songs")
@@ -150,6 +164,30 @@ def press_sequence(plan: list[str], presses: int) -> list[int]:
         if len(keys) >= presses:
             return keys[:presses]
     raise AssertionError("unreachable")
+
+
+def all_pairs_tour(keys: tuple[int, ...], rng: np.random.Generator) -> list[int]:
+    """A walk over the keys in which every jump from one key to another, and every repeat of a key, happens
+    exactly once: len(keys) squared presses after the first. It starts and ends on the first key. (An Euler
+    circuit of the complete graph with loops, by Hierholzer's method, in a random order.)"""
+    left = {key: [int(k) for k in rng.permutation(list(keys))] for key in keys}
+    stack, circuit = [keys[0]], []
+    while stack:
+        here = stack[-1]
+        if left[here]:
+            stack.append(left[here].pop())
+        else:
+            circuit.append(stack.pop())
+    return circuit[::-1]
+
+
+def tour_sequence(keys: tuple[int, ...], presses: int, rng: np.random.Generator) -> list[int]:
+    """Tours one after another, each in a new random order, cut to `presses` keys."""
+    sequence: list[int] = []
+    while len(sequence) < presses:
+        tour = all_pairs_tour(keys, rng)
+        sequence += tour if not sequence else tour[1:]  # the next tour starts where this one ended
+    return sequence[:presses]
 
 
 def task_for_phrase(keys: list[int]) -> str:
@@ -344,6 +382,8 @@ def teach(args: argparse.Namespace) -> None:
         print("Torque is off and the arm is limp. Hold it with one hand, press Enter with the other.")
         for name in names:
             kind, _, number = name.partition("_")
+            if number and LAYOUT_NAMES:  # say the note too: "key 7 (C4)"
+                number = f"{number} ({LAYOUT_NAMES[int(number) - 1]})"
             input(f"\n{name}: {HINTS[kind].format(key=number)}. Enter when it is there. ")
             poses[name] = read_pose(robot)
             write_json(args.poses, {"robot_id": args.robot_id, "poses": poses})
@@ -589,12 +629,31 @@ def record(args: argparse.Namespace) -> None:
     from lerobot.utils.feature_utils import build_dataset_frame, hw_to_dataset_features
 
     poses = load_poses(args.poses)
+    args.names = args.names or LAYOUT_NAMES or None
+    if args.names and len(args.names) != len(KEYS):
+        sys.exit(f"--names takes {len(KEYS)} note names, one per sticker, e.g. C3 D3 E3 F3 G3 A3")
+
+    def key_task(key: int) -> str:
+        """The episode's label: "press key 3", or with --names the note itself, "press E3". Note names
+        keep two recordings on different keys apart when they are merged into one training set."""
+        return f"press {args.names[key - 1]}" if args.names else task_for_key(key)
+
     if unknown := [p for p in args.plan.split(",") if p not in EPISODE_SCRIPTS]:
         sys.exit(f"Unknown episode scripts {unknown}; choose from {list(EPISODE_SCRIPTS)}")
     phrases = read_song(args.phrases) if args.mode == "phrase" else []
-    episodes = plan_episodes(args.mode, args.plan.split(","), phrases, args.presses)
+    if args.mode == "press" and len(KEYS) != 6:
+        # The episode scripts A, B, C, S are written for six keys. For any other number: tours that make
+        # every jump between two keys equally often.
+        plan_rng = np.random.default_rng(args.seed)
+        episodes = [[key] for key in tour_sequence(KEYS, args.presses, plan_rng)]
+    else:
+        episodes = plan_episodes(args.mode, args.plan.split(","), phrases, args.presses)
     n_presses = sum(len(keys) for keys in episodes)
     timing = Timing(speed=args.speed, jitter=args.jitter)
+    if args.fast:  # snappier presses and shorter stops, for a policy that should react quickly
+        timing = Timing(
+            speed=args.speed, jitter=args.jitter, min_travel=0.4, press=0.18, hold=0.12, settle=0.3
+        )
     rng = np.random.default_rng(args.seed)
     cameras = load_json(args.cameras)
     robot = make_robot(args, cameras)
@@ -658,7 +717,7 @@ def record(args: argparse.Namespace) -> None:
         print("Moving to home.", flush=True)
         pose = move_to(robot, poses["home"], args.fps)
         for i, keys in enumerate(episodes):
-            task = args.task or (task_for_key(keys[0]) if args.mode == "press" else task_for_phrase(keys))
+            task = args.task or (key_task(keys[0]) if args.mode == "press" else task_for_phrase(keys))
             stamps: list[float] = []
             presses: list[dict[str, Any]] = []
 
@@ -691,7 +750,7 @@ def record(args: argparse.Namespace) -> None:
                     print(f"\n        >>>  SAY:  {words[key].upper()}  <<<", flush=True)
                     frame_task[0] = args.task or WAIT_TASK
                     play(robot, [Segment(pose, pose, float(rng.uniform(*SAY_WAIT)))], args.fps, add)
-                    frame_task[0] = args.task or task_for_key(key)
+                    frame_task[0] = args.task or key_task(key)
                 go = len(stamps)
                 pose = play(robot, segments, args.fps, add)
                 end = time.perf_counter() - t0
@@ -712,7 +771,7 @@ def record(args: argparse.Namespace) -> None:
                         "ok": ok,
                     }
                 )
-                print(f"[{done}/{n_presses}] episode {i}: {task_for_key(key)}  {verdict}", flush=True)
+                print(f"[{done}/{n_presses}] episode {i}: {key_task(key)}  {verdict}", flush=True)
             dataset.save_episode()
             saved += 1
             session["episodes"].append(
@@ -811,6 +870,11 @@ def main() -> None:
     )
     p.add_argument("--words", choices=("numbers", "solfege"), default="numbers", help="What --say shows")
     p.add_argument("--task", help="One task text for every frame, e.g. 'play the key you hear'")
+    p.add_argument(
+        "--names",
+        nargs="+",
+        help="The note under each sticker, e.g. C3 D3 E3 F3 G3 A3: episodes are labelled 'press E3'",
+    )
     p.add_argument("--plan", default="A,B,C,S", help=f"Episode scripts, cycled: {', '.join(EPISODE_SCRIPTS)}")
     p.add_argument(
         "--speed", type=float, default=Timing.speed, help="Mean joint speed while travelling (deg/s)"
@@ -818,6 +882,7 @@ def main() -> None:
     p.add_argument(
         "--jitter", type=float, default=Timing.jitter, help="Random offset of the above pose (deg)"
     )
+    p.add_argument("--fast", action="store_true", help="Shorter presses and stops: a more reactive policy")
     p.add_argument("--seed", type=int, help="Random seed for the variations")
     p.add_argument("--cameras", type=Path, default=DEFAULT_CAMERAS)
     p.add_argument("--repo-id", default="PawelLach/so101_keys_scripted")
