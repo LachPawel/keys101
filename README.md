@@ -34,6 +34,39 @@ turns back to the keys before the arm plays.
   camera; the other also gets the keyboard's sound drawn as a spectrogram, as a second camera.
 - **Scored by MIDI:** every press is judged by the keyboard itself, so the numbers below needed no human.
 
+```mermaid
+flowchart LR
+    you([You: talk, play, sing])
+    subgraph reachy [Reachy Mini]
+        voice[GPT-Live voice<br/>keys_guide.py]
+        focus[ai-coustics Voice Focus<br/>cleans your voice]
+        head[Head and camera<br/>keys_head.py]
+    end
+    coach[Keys101 coach<br/>keys_coach.py<br/>lessons, modes, score]
+    policy[SmolVLA policy<br/>lerobot-rollout, RTC]
+    arm[SO-101 arm]
+    keys[MIDI keyboard]
+    pitch[SwiftF0<br/>sung pitch in cents]
+    page[Web page<br/>roadmap, keyboard, John]
+
+    you -- voice --> focus --> voice
+    voice -- "what to start" --> coach
+    coach -- "press E3" --> policy
+    head -- "640x360 picture" --> policy
+    policy -- "joint targets, 60 Hz" --> arm
+    arm -- "presses a key" --> keys
+    you -- "plays a key" --> keys
+    keys -- "note on: right or wrong" --> coach
+    you -- sings --> pitch --> coach
+    coach -- "state, live" --> page
+    coach -- "how it went" --> voice
+    coach -- "look at the keys" --> head
+```
+
+The same loop made the training data: `keys_scripted.py` pressed the keys from taught poses, the MIDI
+keyboard labelled and checked each episode, the dataset went to the Hub, and `lerobot-train` fine-tuned
+SmolVLA on Hugging Face Jobs.
+
 | Policy | Keys | Right key first |
 | --- | --- | --- |
 | Camera only | 12 white | 59 of 60 |
@@ -50,6 +83,7 @@ $R scripts/keys_coach.py --arm sim                              # no robot: try 
 $R scripts/keys_coach.py --arm scripted                         # the real arm, from taught poses
 $R scripts/keys_coach.py --arm policy                           # SmolVLA presses the keys
 $R --with aic-sdk==3.3.2 scripts/keys_coach.py --arm policy --voice   # and Reachy talks and looks around
+$R --with aic-sdk==3.3.2 scripts/keys_coach.py --arm policy --voice --speaker "JBL Flip 7"   # its voice on another speaker
 ```
 
 Then open http://localhost:8780. `--voice` needs `OPENAI_API_KEY` and an ai-coustics licence in `.env`.

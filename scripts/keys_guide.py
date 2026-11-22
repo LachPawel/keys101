@@ -213,8 +213,15 @@ class Guide:
     and the game goes on by clicks."""
 
     def __init__(
-        self, coach: Any, state: Any, songs: dict[str, Any], mic: str | None = MIC, cartoon: float = 1.0
+        self,
+        coach: Any,
+        state: Any,
+        songs: dict[str, Any],
+        mic: str | None = MIC,
+        cartoon: float = 1.0,
+        speaker: str | None = None,
     ) -> None:
+        self.speaker = speaker  # where Reachy's voice comes out (None: Reachy's own speaker, else the Mac)
         self.coach, self.state, self.songs, self.mic = coach, state, songs, mic
         self.cartoon = cartoon  # the voice this much faster and higher
         self.busy = False  # something is playing: the microphone is closed
@@ -245,7 +252,7 @@ class Guide:
 
         key = kv.api_key()
         loop = asyncio.get_running_loop()
-        speaker = kv.reachy_speaker()
+        speaker = self.speaker or kv.reachy_speaker()
         audio = kv.Audio(self.mic, speaker, loop)
         clean: Any = None
         try:

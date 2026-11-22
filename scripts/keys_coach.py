@@ -1743,6 +1743,10 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--mic", default="MacBook Pro Microphone", help="The microphone Reachy listens on")
     parser.add_argument(
+        "--speaker",
+        help="Where Reachy's voice comes out, by name: \"JBL Flip 7\". Default: Reachy Mini's own speaker",
+    )
+    parser.add_argument(
         "--cartoon",
         type=float,
         default=1.12,
@@ -1835,7 +1839,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.voice:
         import keys_guide
 
-        guide = keys_guide.Guide(coach, state, songs, args.mic, args.cartoon)
+        guide = keys_guide.Guide(coach, state, songs, args.mic, args.cartoon, args.speaker)
         guide.start()
     if (args.head or ("alive" if args.voice else "still")) == "alive":
         import keys_head
