@@ -1,3 +1,25 @@
+# Keys101
+
+An SO-101 robot arm that teaches you a song on a MIDI keyboard, then plays it with you. Built at HackLab #2
+in Berlin (November 2026) on top of the SO-101 Piano Teacher below.
+
+- **Learn:** the arm hovers over the next key and waits for you. Press a wrong key and it plays the right
+  one, while John (a singing 3D head) sings its name.
+- **Watch and repeat:** the arm plays a phrase, you play it back. MIDI checks every note.
+- **Play together:** you play your part, the arm plays its part with you. You lead, it follows.
+- **Jam:** play a short phrase and stop. The arm answers it, echoed or upside down.
+
+```bash
+R="uv run --with-requirements scripts/requirements-keys.txt"
+$R scripts/keys_coach.py --arm sim                  # no robot: try it in the browser
+$R scripts/keys_coach.py teach --corners            # teach the arm three keys, the rest are filled in
+$R scripts/keys_coach.py --arm scripted             # the real arm, from taught poses
+$R scripts/keys_coach.py --arm policy               # SmolVLA presses its six keys, taught poses do the rest
+```
+
+Then open http://localhost:8780. Songs are plain text files in [`scripts/lessons`](scripts/lessons). The
+code is [`scripts/keys_coach.py`](scripts/keys_coach.py) and the page is [`web/coach.html`](web/coach.html).
+
 # SO-101 Piano Teacher
 
 A cheap robot arm (SO-101) that presses the keys of a MIDI keyboard, hears the notes it plays, and gives

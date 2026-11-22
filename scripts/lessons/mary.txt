@@ -1,0 +1,7 @@
+title: Mary Had a Little Lamb
+about: Traditional, 1830. Three notes to start, then one more.
+level: 1
+you: E4 D4 C4 D4 | E4 E4 E4 | D4 D4 D4 | E4 G4 G4
+arm: C3          | C3       | G3       | C3
+you: E4 D4 C4 D4 | E4 E4 E4 E4 | D4 D4 E4 D4 | C4
+arm: C3          | C3          | G3          | C3

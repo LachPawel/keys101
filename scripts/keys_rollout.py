@@ -1,8 +1,9 @@
 #!/usr/bin/env python
-"""`lerobot-rollout`, with one more chat command for the interactive session: /pause.
+"""`lerobot-rollout`, with two more chat commands for the interactive session: /pause and /goto.
 
     /pause        stop the policy and hold the arm exactly where it is. /start carries on from there.
     /pause 8      the same, then raise the arm 8 degrees at its second servo (shoulder lift)
+    /goto {...} 0.6   pause, then move to a pose (joint -> degrees) in 0.6 s. keys_coach.py points with it.
 
 The stock session only has /reset, which sends the arm back to the pose it had at launch. For the keyboard
 that is the wrong place to wait: the policy was trained going from key to key, and its first press after a
@@ -18,6 +19,7 @@ the session when it is created.
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
@@ -62,6 +64,58 @@ def raise_arm(
     return True
 
 
+def goto(controller: Any, pose: dict[str, float], seconds: float, fps: int = 50) -> bool:
+    """Move the arm to a pose (joint name -> degrees, e.g. a taught "above" pose) along a smooth curve,
+    with the policy paused. For keys_coach.py: pointing at a key, and keys the policy never learned."""
+    if controller.running and not pause(controller):
+        return False
+    deadline = time.perf_counter() + 2.0
+    while controller.running and time.perf_counter() < deadline:
+        time.sleep(0.01)
+    if controller.running:
+        return False
+    hardware = controller._ctx.hardware
+    robot = hardware.robot_wrapper
+    observation = robot.get_observation()
+    start = {key: float(observation[key]) for key in hardware.initial_position}
+    end = {**start, **{k: float(v) for k, v in pose.items() if k in start}}
+    steps = max(int(max(seconds, 0.05) * fps), 1)
+    t0 = time.perf_counter()
+    for step in range(1, steps + 1):
+        s = step / steps
+        a = s**3 * (10 - 15 * s + 6 * s * s)  # min-jerk: still at both ends
+        robot.send_action({k: start[k] + a * (end[k] - start[k]) for k in start})
+        time.sleep(max(0.0, t0 + step / fps - time.perf_counter()))
+    return True
+
+
+def add_goto_command() -> None:
+    """/goto {"shoulder_pan.pos": 3.1, ...} 0.6   -> pause the policy, move there in 0.6 s."""
+    original = interactive.InteractiveSession.__init__
+
+    def with_goto(self: Any, *args: Any, **kwargs: Any) -> None:
+        original(self, *args, **kwargs)
+
+        def command(cmd: Any) -> None:
+            text = (cmd.args or "").strip()
+            body, _, last = text.rpartition(" ")
+            try:
+                seconds = float(last)
+            except ValueError:
+                body, seconds = text, 0.6
+            try:
+                pose = json.loads(body)
+            except json.JSONDecodeError:
+                self._print("/goto takes a JSON pose and an optional number of seconds.")
+                return
+            if not goto(self.controller, pose, seconds):
+                self._print("Can't move: the session is busy or stopping.")
+
+        self._commands["goto"] = (command, " <json pose> [seconds]", "pause the policy and move to a pose")
+
+    interactive.InteractiveSession.__init__ = with_goto  # type: ignore[method-assign]
+
+
 def add_pause_command() -> None:
     original = interactive.InteractiveSession.__init__
 
@@ -91,4 +145,5 @@ def add_pause_command() -> None:
 
 if __name__ == "__main__":
     add_pause_command()
+    add_goto_command()
     lerobot_rollout.main()

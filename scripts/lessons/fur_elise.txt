@@ -1,0 +1,7 @@
+title: Für Elise, the opening
+about: Beethoven, 1810. Your first black key: D sharp.
+level: 3
+you: E4 D#4 E4 D#4 | E4 B3 D4 C4 | A3
+you: C3 E3 A3 | B3
+you: E3 G#3 B3 | C4
+you: E4 D#4 E4 D#4 | E4 B3 D4 C4 | A3
