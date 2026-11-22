@@ -1037,9 +1037,8 @@ class Coach:
         self.lock = threading.Lock()
         self.hearts: int | None = None  # None outside a lesson: free practice costs nothing
         self.head: Any = None  # Reachy's head (keys_head.Head): locked on the piano while anything plays
-        self.voice: Callable[[str], Any] | None = (
-            None  # Reachy says a line and returns when it has (the guide)
-        )
+        self.voice: Callable[[str], Any] | None = None  # Reachy says a line; returns when it has
+        self.talking = False  # a line is being said in the background
         self.progress_path = progress_path
         self.progress = load_progress(self.progress_path)
         self.show_course()
@@ -1260,7 +1259,7 @@ class Coach:
                             self.arm.point(note)
                             pointed = True
                             self.say("Here", f"{midi_name(note)}: the key under the arm.")
-                            self.speak(f"It is {spoken_note(note)}, the key under the arm.")
+                            self.speak(f"It is {spoken_note(note)}, the key under the arm.", wait=False)
                             continue
                         if press.midi == note:
                             self.state.judge(press.id, True)
@@ -1270,13 +1269,19 @@ class Coach:
                         self.mark(notes, i, "miss")
                         self.wrong(press)
                         self.say("Not that one", f"Listen: this is {midi_name(note)}. Now you.", "miss")
-                        # Reachy says what went wrong, and why the arm plays the note again
+                        # The arm answers a wrong key at once with the right one. Reachy says what went wrong,
+                        # and why the arm plays it, while that happens: the correction never waits for words.
                         self.speak(
                             f"That was {spoken_note(press.midi)}. We want {spoken_note(note)}: "
-                            "the arm plays it again so you hear it. Then you."
+                            "the arm plays it so you hear it. Now you.",
+                            wait=False,
                         )
                         self.state.john(note)
-                        self.arm_plays(note)
+                        self.arm.fast = True  # type: ignore[attr-defined]
+                        try:
+                            self.arm_plays(note)
+                        finally:
+                            self.arm.fast = False  # type: ignore[attr-defined]
                         self.mark(notes, i, "now")
                         pointed = reach
                 self.state.set(target=None)
@@ -1414,11 +1419,25 @@ class Coach:
         self.state.set(sung={"midi": midi, "cents": cents, "trace": trace, "seconds": seconds, "live": False})
         return cents
 
-    def speak(self, line: str) -> None:
-        """Reachy says this line out loud, and we wait until it has (keys_guide.py). Silent without a voice."""
-        if self.voice is not None:
-            with contextlib.suppress(Exception):
-                self.voice(line)
+    def speak(self, line: str, wait: bool = True) -> None:
+        """Reachy says this line out loud (keys_guide.py). Silent without a voice. wait=False: it talks while
+        the lesson goes on, for a correction that must not hold the arm back; a line that would talk over
+        the one before it is dropped."""
+        if self.voice is None:
+            return
+
+        def say() -> None:
+            try:
+                with contextlib.suppress(Exception):
+                    self.voice(line)  # type: ignore[misc]
+            finally:
+                self.talking = False
+
+        if wait:
+            say()
+        elif not self.talking:
+            self.talking = True
+            threading.Thread(target=say, daemon=True).start()
 
     def sing(self, song: Song) -> None:
         """A singing lesson, note by note. Reachy says what comes, the arm plays the note and John sings it;
