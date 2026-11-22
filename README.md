@@ -17,7 +17,8 @@ HackLab #2 in Berlin (22 November 2026) on top of the SO-101 Piano Teacher below
   John (a singing 3D head) sings its name.
 - **Repeat:** the arm plays a phrase, you play it back. MIDI checks every note.
 - **Together:** you play the tune, the arm is your bass player. You lead, it follows.
-- **Sing:** the arm plays a note, you sing it back, and SwiftF0 says how many cents off you were.
+- **Sing:** Reachy says what comes, the arm plays a note and John sings it, then it is your turn. SwiftF0
+  draws your pitch live and says how many cents off you were, and John shows how to fix it.
 - **Jam:** play a short phrase and stop. The arm answers it.
 - **New tune:** Reachy makes up four bars from the keys the arm knows, and the arm teaches them.
 
@@ -79,6 +80,19 @@ SmolVLA on Hugging Face Jobs.
 | Camera and ears, all keys | 12 white, 10 black | 17 of 22 |
 
 The 22-key policy had 160 good black-key episodes against 595 white ones, and black keys are narrow.
+
+Everything is on the Hugging Face Hub:
+
+| What | Hugging Face |
+| --- | --- |
+| Policy, camera only, 12 white keys | [smolvla-keys101-camera-only](https://huggingface.co/PawelLach/smolvla-keys101-camera-only) |
+| Policy, camera and ears, 12 white keys | [smolvla-keys101-camera-ears](https://huggingface.co/PawelLach/smolvla-keys101-camera-ears) |
+| Policy, camera and ears, all 22 keys | [smolvla-keys101-22keys](https://huggingface.co/PawelLach/smolvla-keys101-22keys) |
+| Data, 12 white keys, 595 episodes | [so101-keys101-12keys](https://huggingface.co/datasets/PawelLach/so101-keys101-12keys), [camera only](https://huggingface.co/datasets/PawelLach/so101-keys101-12keys-camera-only) |
+| Data, all 22 keys, 755 episodes | [so101-keys101-22keys](https://huggingface.co/datasets/PawelLach/so101-keys101-22keys) |
+
+Each policy repository holds the checkpoints of its training run under `checkpoints/<step>/pretrained_model`;
+the scores above are from step 6,000.
 
 **Sound helped before, and not today.** In the earlier experiment (leader arm, 134 episodes, 5,000 steps)
 the policy with ears pressed a key exactly once in 7 of 13 runs, against 2 of 12 for camera only: it knew

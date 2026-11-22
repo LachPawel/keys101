@@ -119,15 +119,14 @@ body[data-view="home"] .john { opacity: 0.32; top: 8px; }
 .score { font-size: 13px; color: var(--muted); white-space: nowrap; background: var(--paper); border: 1px solid var(--line); border-radius: 30px; padding: 6px 14px; }
 .score:empty { display: none; }
 .score b { color: var(--text); font-size: 15px; }
-.meter { display: flex; align-items: center; gap: 12px; max-width: 60%; }
-.meter[hidden] { display: none; }
-.meter-end { font: 500 10px/1 ui-monospace, monospace; letter-spacing: 0.1em; text-transform: uppercase; color: #8a8f7b; }
-.meter-bar { position: relative; flex: 1; height: 14px; border-radius: 30px; background: var(--paper); border: 1px solid var(--line); }
-.meter-ok { position: absolute; left: 30%; width: 40%; top: 0; bottom: 0; background: var(--accent-soft); border-radius: 30px; }
-.meter-dot { position: absolute; top: 50%; width: 22px; height: 22px; margin: -11px 0 0 -11px; border-radius: 50%; background: var(--miss); border: 3px solid var(--bg); transition: left 500ms cubic-bezier(.3,.7,.2,1), background 200ms; }
-.meter-dot[hidden] { display: none; }
-.meter-dot.ok { background: var(--accent); }
-.meter-text { min-width: 110px; font: 600 14px/1 ui-monospace, monospace; color: var(--text); }
+.lane { background: var(--paper); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 2px 0 #ece8da; padding: 14px 18px 16px; display: flex; flex-direction: column; gap: 10px; }
+.lane[hidden] { display: none; }
+.lane-head { display: flex; align-items: baseline; gap: 16px; }
+.lane-head b { font-size: 22px; font-weight: 700; letter-spacing: -0.03em; }
+.lane-head span { font: 500 13px/1 ui-monospace, monospace; color: var(--muted); }
+.lane-head span[data-tone="ok"] { color: var(--accent); }
+.lane-head span[data-tone="miss"] { color: var(--miss); }
+#lane-svg { display: block; width: 100%; height: clamp(120px, 22vh, 200px); }
 .board { position: relative; flex: 1; min-height: 150px; max-height: 340px; padding: 44px 18px 18px; display: flex; margin-top: auto; background: var(--paper); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 2px 0 #ece8da; }
 .arm-lane { position: absolute; inset: 12px 18px auto 18px; height: 28px; }
 .arm-mark { position: absolute; top: 0; transform: translateX(-50%); font: 600 10px/1 ui-monospace, monospace; color: #fff; background: var(--warm); padding: 5px 8px 6px; border-radius: 6px; transition: left 260ms cubic-bezier(.3,.7,.2,1), opacity 200ms; opacity: 0; pointer-events: none; white-space: nowrap; }

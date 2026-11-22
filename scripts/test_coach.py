@@ -420,10 +420,16 @@ def test_sing_mode_judges_each_note_in_cents() -> None:
     coach, _ears, state = make_coach()
     answers = iter([-80.0, 12.0, None, 5.0, 30.0])  # flat then in tune; not heard then in tune; in tune
     coach.hear_sung = lambda midi, seconds=0.0: next(answers)  # no microphone in a test
+    said: list[str] = []
+    coach.voice = said.append  # what Reachy would say out loud
     coach.pause = lambda seconds: None if not coach.ears.stop.is_set() else (_ for _ in ()).throw(kc.Stopped)
     coach.start("sing", "tiny")
     wait_for(lambda: state.get("big") == "Sung", timeout=10)
     assert state.get("small") == "3 of 3 notes in tune."
     assert [n["status"] for n in state.get("notes")] == ["ok"] * 3
     arm_notes = [p["midi"] for p in state.get("presses") if p["who"] == "arm"]
-    assert arm_notes == [60, 60, 62, 62, 64], "a missed note is played again before the second try"
+    # every try: the arm plays the note for John's show, and again for your turn
+    assert arm_notes == [60] * 4 + [62] * 4 + [64] * 2
+    assert said[0] == "I play C, and John shows you how to sing it."
+    assert said.count("Now your turn.") == 5 and "A little higher. Watch John." in said
+    assert said[-1] == "Well done, that was in tune."

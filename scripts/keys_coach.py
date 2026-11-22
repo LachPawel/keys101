@@ -101,6 +101,12 @@ def is_black(midi: int) -> bool:
     return NAMES[midi % 12].endswith("#")
 
 
+def spoken_note(midi: int) -> str:
+    """A note's name as you would say it: "E", "C sharp"."""
+    name = NAMES[midi % 12]
+    return f"{name[0]} sharp" if name.endswith("#") else name
+
+
 def syllable(midi: int) -> str:
     return SYLLABLE.get(midi % 12, "la")
 
@@ -160,7 +166,7 @@ class Song:
 
 SONG_MODES = ("learn", "listen", "watch", "together", "sing")  # the modes that need a song; a jam needs none
 SING_S = 2.6  # how long you sing a note for
-SING_NOTES = 5  # a Sing round is this many notes
+SING_NOTES = 4  # a Sing round is this many notes
 SING_OK_CENTS = 40.0  # in tune: within this of the note, in any octave (the voice teacher's own limit)
 MADE_UP = "made_up"  # the song Reachy makes up on the spot: one at a time, the newest replaces the last
 TUNE_CHORDS = (  # root, the bass key under it: a tune walks home through these, one per bar
@@ -458,10 +464,17 @@ class State:
             self.version += 1
             self.cond.notify_all()
 
-    def john(self, midi: int, seconds: float = 0.9) -> None:
+    def john(self, midi: int, seconds: float = 0.9, start: float | None = None) -> None:
+        """John sings this note once. start: a pitch (MIDI, may sit between keys) he begins on and slides from."""
         with self.cond:
             self.john_id += 1
-            self.data["john"] = {"id": self.john_id, "midi": midi, "name": syllable(midi), "seconds": seconds}
+            self.data["john"] = {
+                "id": self.john_id,
+                "midi": midi,
+                "name": syllable(midi),
+                "seconds": seconds,
+                "from": start,
+            }
             self.version += 1
             self.cond.notify_all()
 
@@ -748,6 +761,7 @@ class PolicyArm:
         # Keys101 never moves Reachy's head, and a head that is sent back lands a few degrees off: so by
         # default it is left exactly where it is. lock_reachy sends it to the saved pose before each press.
         self.lock_reachy = lock_reachy
+        self.fast = False  # Listen sets it: shorter moves from the taught poses
         command, self.label = keys_play.build_command(model, task, 0.0, port, None, True, 60, policy_speed)
         command.append("--interactive=true")
         if not any(arg.startswith("--inference.action_starvation_grace_s") for arg in command):
@@ -771,14 +785,18 @@ class PolicyArm:
         if self.ears.stop.is_set():
             raise Stopped
         self.tell(f"/goto {json.dumps(pose, separators=(',', ':'))} {seconds:.2f}")
-        if self.ears.stop.wait(seconds + 0.15):  # the session moves on its own clock; give it the time
+        # the session moves on its own clock; give it the time, and a little less when playing fast
+        if self.ears.stop.wait(seconds + (0.04 if self.fast else 0.15)):
             raise Stopped
 
     def point(self, midi: int) -> None:
         if self.at == midi or not self.board.reaches(midi):
             return
         self.state.set(arm={**self.state.get("arm"), "at": midi, "pressing": None})
-        self.goto(self.board.keys[midi]["above"], 0.6)
+        travel = 0.6
+        if self.fast:  # Listen: a neighbour in a fifth of a second, two octaves in half a second
+            travel = min(0.5, 0.2 + 0.013 * abs(midi - (self.at if self.at is not None else midi + 12)))
+        self.goto(self.board.keys[midi]["above"], travel)
         self.at = midi
 
     def press(self, midi: int, learned: bool = False) -> None:
@@ -789,9 +807,10 @@ class PolicyArm:
             keys = self.board.keys[midi]
             self.state.set(arm={**self.state.get("arm"), "pressing": midi, "how": "scripted"})
             self.ears.expect(midi, 2.0)
-            down = self.speeds.down * (BLACK_SLOWER if is_black(midi) else 1.0)
-            self.goto(keys["down"], down + self.speeds.hold)
-            self.goto(keys["above"], down)
+            slower = (2.0 if self.fast else BLACK_SLOWER) if is_black(midi) else 1.0
+            down = self.speeds.down * slower
+            self.goto(keys["down"], down + (0.03 if self.fast else self.speeds.hold))
+            self.goto(keys["above"], 0.1 * slower if self.fast else down)
             self.state.set(arm={**self.state.get("arm"), "pressing": None})
 
     def snap(self) -> Any:
@@ -951,6 +970,9 @@ def course_view(progress: dict[str, Any]) -> list[dict[str, Any]]:
 @dataclass
 class Settings:
     mic: str | None = None  # Sing: the microphone your voice is measured on (None: the system's)
+    listen_learned: bool = (
+        False  # Listen: the policy presses every note (slower), else fast from taught poses
+    )
     passes: int = 2  # clean runs of a phrase in Learn before the next one
     max_tries: int = 4  # runs of a phrase before Learn moves on anyway
     hesitate_s: float = 2.5  # second run of Learn: the arm points only if you wait this long
@@ -976,6 +998,9 @@ class Coach:
         self.lock = threading.Lock()
         self.hearts: int | None = None  # None outside a lesson: free practice costs nothing
         self.head: Any = None  # Reachy's head (keys_head.Head): locked on the piano while anything plays
+        self.voice: Callable[[str], Any] | None = (
+            None  # Reachy says a line and returns when it has (the guide)
+        )
         self.progress_path = progress_path
         self.progress = load_progress(self.progress_path)
         self.show_course()
@@ -1270,8 +1295,12 @@ class Coach:
             self.say("The arm plays", f"{song.title}, phrase {p_index + 1} of {total}.")
             for i, note in enumerate(phrase.notes):
                 self.mark(notes, i, "now")
-                self.state.john(note, 0.6)
-                self.arm_plays(note, learned=True)
+                self.state.john(note, 0.4)
+                self.arm.fast = not self.settings.listen_learned  # type: ignore[attr-defined]
+                try:
+                    self.arm_plays(note, learned=self.settings.listen_learned)
+                finally:
+                    self.arm.fast = False  # type: ignore[attr-defined]
                 self.mark(notes, i, "arm")
         self.arm.away()
         self.ears.flush()
@@ -1279,29 +1308,63 @@ class Coach:
 
     def hear_sung(self, midi: int, seconds: float = SING_S) -> float | None:
         """Listen to you sing for a moment and say how far from the note you were, in cents (any octave):
-        minus is flat, plus is sharp, None is no clear pitch. SwiftF0 measures it, on the raw microphone."""
+        minus is flat, plus is sharp, None is no clear pitch. SwiftF0 measures it, on the raw microphone.
+        While you sing, the page gets your pitch as a line (`sung.trace`), a few times a second."""
         import keys_listen
         import numpy as np
         import sounddevice as sd
 
-        rate = 16000
-        take = sd.rec(
-            int(seconds * rate), samplerate=rate, channels=1, dtype="float32", device=self.settings.mic
-        )
-        try:
-            self.pause(seconds + 0.1)
-        finally:
-            sd.stop()
-        track = keys_listen.tracker().detect(np.ascontiguousarray(take[:, 0], dtype=np.float32), rate)
-        hz = np.asarray(track.pitch_hz, dtype=float)[np.asarray(track.confidence) >= 0.5]
-        if hz.size < 15:  # under a quarter of a second of clear pitch
-            return None
+        rate, frame_s = 16000, 0.016
+        tracker = keys_listen.tracker()
         target = 440.0 * 2 ** ((midi - 69) / 12)
-        return float(np.median((1200 * np.log2(hz / target) + 600) % 1200 - 600))
+        chunks: list[Any] = []
+
+        def measure() -> tuple[float | None, list[list[float] | None]]:
+            audio = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
+            if audio.size < rate // 4:
+                return None, []
+            track = tracker.detect(np.ascontiguousarray(audio, dtype=np.float32), rate)
+            hz, sure = np.asarray(track.pitch_hz, dtype=float), np.asarray(track.confidence) >= 0.5
+            # every third frame (48 ms) as [seconds, semitones from the note, in whichever octave you sing]
+            trace: list[list[float] | None] = [
+                [round(i * frame_s, 2), round(float((12 * np.log2(hz[i] / target) + 6) % 12 - 6), 2)]
+                if sure[i]
+                else None
+                for i in range(0, len(hz), 3)
+            ]
+            voiced = hz[sure]
+            if voiced.size < 15:  # under a quarter of a second of clear pitch
+                return None, trace
+            return float(np.median((1200 * np.log2(voiced / target) + 600) % 1200 - 600)), trace
+
+        def grab(indata: Any, frames: int, when: Any, status: Any) -> None:
+            chunks.append(indata[:, 0].copy())
+
+        cents: float | None = None
+        with sd.InputStream(
+            samplerate=rate, channels=1, dtype="float32", device=self.settings.mic, callback=grab
+        ):
+            end = time.monotonic() + seconds
+            while time.monotonic() < end:
+                self.pause(0.15)
+                cents, trace = measure()
+                self.state.set(
+                    sung={"midi": midi, "cents": cents, "trace": trace, "seconds": seconds, "live": True}
+                )
+        cents, trace = measure()
+        self.state.set(sung={"midi": midi, "cents": cents, "trace": trace, "seconds": seconds, "live": False})
+        return cents
+
+    def speak(self, line: str) -> None:
+        """Reachy says this line out loud, and we wait until it has (keys_guide.py). Silent without a voice."""
+        if self.voice is not None:
+            with contextlib.suppress(Exception):
+                self.voice(line)
 
     def sing(self, song: Song) -> None:
-        """Ear training: the arm plays a note, John sings it, you sing it back, and SwiftF0 says how close
-        you were. The notes are the song's own, each once, in the order they first come."""
+        """A singing lesson, note by note. Reachy says what comes, the arm plays the note and John sings it;
+        Reachy says "now your turn" and the arm plays it again; you sing, SwiftF0 measures, and Reachy tells
+        you how it was. Off the note: John shows the fix, starting where you were and sliding to the note."""
         tune: list[int] = []
         for phrase in song.phrases:
             for note in phrase.notes:
@@ -1312,26 +1375,50 @@ class Coach:
         self.state.set(notes=notes, phrase=0, phrases=0)
         hit = 0
         for i, note in enumerate(tune):
-            for attempt in range(2):
+            said = spoken_note(note)
+            was: float | None = None  # where you sang on the last try, in cents from the note
+            for _attempt in range(2):
                 self.mark(notes, i, "now")
-                self.state.set(sung=None)
-                self.say("Listen", f"{midi_name(note)}. The arm plays it and John sings it.")
-                self.state.john(note, 1.2)
+                self.state.set(
+                    sung={"midi": note, "cents": None, "trace": [], "seconds": SING_S, "live": False}
+                )
+                if was is None:
+                    self.say("Listen", f"{midi_name(note)}. The arm plays it and John sings it.")
+                    self.speak(
+                        f"I play {said}, and John shows you how to sing it."
+                        if i == 0
+                        else f"Next note: {said}."
+                    )
+                else:
+                    self.say("Watch John", "He starts where you were and slides to the note.")
+                # John sings as the key sounds; on a second try he starts on your pitch and slides to the note
+                self.state.john(
+                    note, 1.4 if was is None else 2.1, start=None if was is None else note + was / 100
+                )
                 self.arm_plays(note, learned=True)
-                self.pause(0.9)  # the piano dies away: only your voice is measured
-                self.state.set(target=note)
+                self.pause(1.5 if was is None else 2.2)
                 self.say("Your turn", "Sing it on la, and hold it.")
+                self.speak("Now your turn.")
+                self.arm.fast = True  # type: ignore[attr-defined]  the note again, quickly, from the taught pose
+                try:
+                    self.arm_plays(note)
+                finally:
+                    self.arm.fast = False  # type: ignore[attr-defined]
+                self.pause(0.4)  # the piano dies away: only your voice is measured
+                self.state.set(target=note)
                 cents = self.hear_sung(note)
-                self.state.set(target=None, sung={"midi": note, "cents": cents})
+                heard = self.state.get("sung") or {}
+                self.state.set(target=None, sung={**heard, "midi": note, "cents": cents, "live": False})
                 if cents is None:
                     self.mark(notes, i, "miss")
                     self.say("I did not hear you", "Sing a little louder, and hold the note.", "miss")
+                    self.speak("I did not hear you. Sing a little louder, and hold it.")
                 elif abs(cents) <= SING_OK_CENTS:
                     hit += 1
                     self.mark(notes, i, "ok")
                     self.state.set(score={**self.state.get("score"), "right": hit})
                     self.say("In tune", f"{abs(cents):.0f} cents off: that is {midi_name(note)}.", "ok")
-                    self.pause(1.4)
+                    self.speak("Well done, that was in tune.")
                     break
                 else:
                     self.mark(notes, i, "miss")
@@ -1341,7 +1428,9 @@ class Coach:
                         f"You were {abs(cents):.0f} cents {'flat' if cents < 0 else 'sharp'}.",
                         "miss",
                     )
-                self.pause(1.6)
+                    self.speak(f"A little {way}. Watch John.")
+                    was = max(-300.0, min(300.0, cents))
+                self.pause(0.6)
         self.arm.away()
         self.state.set(sung=None)
         self.say("Sung", f"{hit} of {len(tune)} notes in tune.", "ok" if hit else "")
@@ -1766,6 +1855,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--range", nargs=2, default=("C3", "C5"), metavar=("LOW", "HIGH"), help="Keys drawn")
     parser.add_argument("--speed", type=float, default=120.0, help="Scripted moves between keys, deg/s")
     parser.add_argument(
+        "--listen",
+        choices=("poses", "policy"),
+        default="poses",
+        help="Listen: the arm plays from the taught poses, as fast as it can, or the learned policy plays",
+    )
+    parser.add_argument(
         "--bass",
         choices=("policy", "poses"),
         default="policy",
@@ -1834,13 +1929,20 @@ def main(argv: list[str] | None = None) -> None:
         big="Pick a lesson",
         small="The arm shows you each key and waits for you.",
     )
-    coach = Coach(arm, ears, state, songs, Settings(bass_learned=args.bass == "policy", mic=args.mic))
+    coach = Coach(
+        arm,
+        ears,
+        state,
+        songs,
+        Settings(bass_learned=args.bass == "policy", mic=args.mic, listen_learned=args.listen == "policy"),
+    )
     guide = None
     if args.voice:
         import keys_guide
 
         guide = keys_guide.Guide(coach, state, songs, args.mic, args.cartoon, args.speaker)
         guide.start()
+        coach.voice = guide.speak
     if (args.head or ("alive" if args.voice else "still")) == "alive":
         import keys_head
 

@@ -134,6 +134,11 @@ HEDGES = ("if you", "i can ", "i could", "we can ", "we could", "you can ", "you
           "want to", "wanna", "like to", "sorry")  # fmt: skip
 
 
+def say_exactly(line: str) -> str:
+    """A note that makes Reachy say one line, word for word: the singing lesson's cues and verdicts."""
+    return f'Private note. Say exactly these words and nothing else: "{line}"'
+
+
 def decide(announced: str, course: list[dict[str, Any]], songs: dict[str, Any]) -> tuple[str, ...]:
     """What to start, from Reachy's own announcement. It has the whole conversation in its head, so it
     does the inferring; this only reads the one thing it named. A question, an offer, two options, or a
@@ -230,6 +235,9 @@ class Guide:
         self.said = ""  # everything Reachy said, for reading its announcements
         self.said_at = 0.0
         self.pending: str | None = None  # the delegation waiting to hear how what it started went
+        self.last: str | None = None  # the newest delegation: Reachy can be given a line to say on it
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._say: Any = None  # say a line now (a coroutine function), while a conversation is open
         self.stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
@@ -238,6 +246,16 @@ class Guide:
 
     def close(self) -> None:
         self.stop.set()
+
+    def speak(self, line: str, timeout: float = 12.0) -> bool:
+        """Reachy says this line, word for word, and this returns once it has. For other threads (the coach,
+        in the middle of a lesson). False when it cannot speak now: no conversation has started yet."""
+        if self._loop is None or self._say is None or (self.pending or self.last) is None:
+            return False
+        try:
+            return bool(asyncio.run_coroutine_threadsafe(self._say(line), self._loop).result(timeout))
+        except Exception:  # noqa: BLE001  a lesson never waits on a voice that fails
+            return False
 
     def _run(self) -> None:
         try:
@@ -252,6 +270,7 @@ class Guide:
 
         key = kv.api_key()
         loop = asyncio.get_running_loop()
+        self._loop = loop
         speaker = self.speaker or kv.reachy_speaker()
         audio = kv.Audio(self.mic, speaker, loop)
         clean: Any = None
@@ -312,17 +331,29 @@ class Guide:
         def show() -> None:
             self.state.set(voice={"on": True, "you": self.heard[-160:], "reachy": self.spoken[-220:]})
 
-        async def announcement(mark: int) -> str:
+        async def announcement(mark: int, quiet: float = 1.4) -> str:
             """What Reachy says after a note: wait until it has spoken and gone quiet again."""
             deadline = time.monotonic() + 12.0
             while time.monotonic() < deadline and not done.is_set():
                 await asyncio.sleep(0.1)
-                if len(self.said) > mark and time.monotonic() - self.said_at > 1.4:
+                if len(self.said) > mark and time.monotonic() - self.said_at > quiet:
                     break
             await audio.finished_speaking()
             return self.said[mark:]
 
+        async def say_now(line: str) -> bool:
+            target = self.pending or self.last
+            if target is None or done.is_set():
+                return False
+            mark = len(self.said)
+            await tell(target, say_exactly(line))
+            await announcement(mark, quiet=0.7)
+            return True
+
+        self._say = say_now
+
         async def handle(delegation_id: str) -> None:
+            self.last = delegation_id
             request, self.heard = self.heard, ""
             course = self.state.get("course")
             if parse(request, course, self.songs) == ("stop",):  # stopping never waits for a sentence

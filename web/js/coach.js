@@ -237,6 +237,52 @@ function showView(was, next) {
   }
 }
 
+// ---------------------------------------------------------------- Sing: the pitch lane
+
+/** Thirteen rows, six semitones either side of the note. Your voice is a line across them, left to right. */
+export function drawLane(next) {
+  const lane = $("lane");
+  const sung = next.sung;
+  lane.hidden = next.mode !== "sing" || !sung;
+  if (lane.hidden) return;
+  const svg = $("lane-svg");
+  const W = Math.max(320, svg.clientWidth || 1000); // drawn at its real size, so the labels are not stretched
+  const H = Math.max(110, svg.clientHeight || 190);
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  const LEFT = 56, ROW = H / 13;
+  const y = (semis) => (6.5 - semis) * ROW; // the middle of the row `semis` above the note
+  let out = "";
+  for (let k = 6; k >= -6; k--) {
+    const midi = sung.midi + k;
+    const top = y(k) - ROW / 2;
+    const fill = k === 0 ? "#cfe0b4" : isBlack(midi) ? "#f8f6ee" : "#efecdf";
+    out += `<rect x="${LEFT}" y="${top + 1}" width="${W - LEFT}" height="${ROW - 2}" rx="5" fill="${fill}"/>`;
+    if (k === 0 || !isBlack(midi)) {
+      out += `<text x="${LEFT - 10}" y="${y(k) + 4}" text-anchor="end" font-size="${k === 0 ? 13 : 11}" font-weight="${k === 0 ? 700 : 400}" fill="${k === 0 ? "#52653a" : "#9a9d8c"}" font-family="ui-monospace, monospace">${noteName(midi)}</text>`;
+    }
+  }
+  const seconds = sung.seconds || 2.6;
+  const x = (t) => LEFT + (t / seconds) * (W - LEFT);
+  let path = "";
+  let pen = false;
+  let last = 0;
+  for (const point of sung.trace || []) {
+    if (!point) { pen = false; continue; }
+    path += `${pen ? "L" : "M"}${x(point[0]).toFixed(1)},${y(point[1]).toFixed(1)} `;
+    pen = true;
+    last = point[0];
+  }
+  const good = sung.cents != null && Math.abs(sung.cents) <= 40;
+  if (path) out += `<path d="${path}" fill="none" stroke="${good ? "#637747" : "#c2492f"}" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`;
+  if (sung.live) out += `<line x1="${x(last)}" x2="${x(last)}" y1="0" y2="${H}" stroke="#8a8f7b" stroke-width="1.5" vector-effect="non-scaling-stroke"/>`;
+  svg.innerHTML = out;
+  $("lane-title").textContent = `Sing ${noteName(sung.midi)}`;
+  $("lane-text").textContent = sung.cents == null
+    ? (sung.live ? "listening: sing and hold" : (sung.trace || []).length ? "not heard" : "the arm plays it first")
+    : `${sung.cents > 0 ? "+" : ""}${Math.round(sung.cents)} cents: ${good ? "in tune" : sung.cents < 0 ? "a little higher" : "a little lower"}`;
+  $("lane-text").dataset.tone = sung.cents == null ? "" : good ? "ok" : "miss";
+}
+
 // ---------------------------------------------------------------- render
 
 function render(next) {
@@ -275,16 +321,7 @@ function render(next) {
   const where = next.phrases ? `phrase ${next.phrase + 1} of ${next.phrases} · ` : "";
   $("score").innerHTML = s.right + s.wrong ? `${where}<b>${s.right}</b> right · <b>${s.wrong}</b> ${s.wrong === 1 ? "slip" : "slips"}` : "";
 
-  // Sing: where your voice sat, from 100 cents flat to 100 sharp.
-  $("meter").hidden = next.mode !== "sing";
-  const sung = next.sung;
-  $("meter-dot").hidden = !sung || sung.cents == null;
-  if (sung && sung.cents != null) {
-    const c = Math.max(-100, Math.min(100, sung.cents));
-    $("meter-dot").style.left = `${50 + c / 2}%`;
-    $("meter-dot").classList.toggle("ok", Math.abs(sung.cents) <= 40);
-    $("meter-text").textContent = `${sung.cents > 0 ? "+" : ""}${Math.round(sung.cents)} cents`;
-  } else $("meter-text").textContent = next.mode === "sing" ? (sung ? "not heard" : "sing and hold") : "";
+  drawLane(next);
 
   const reach = new Set(next.reach);
   const down = new Set(next.keys_down);
@@ -347,7 +384,9 @@ const john = (() => {
     follow(was, now) {
       if (now.john && now.john.id !== lastJohn) {
         lastJohn = now.john.id;
-        post({ type: "sing", midi: now.john.midi, seconds: now.john.seconds, name: now.john.name, backing: now.mode === "jam" });
+        const ask = { type: "sing", midi: now.john.midi, seconds: now.john.seconds, name: now.john.name, backing: now.mode === "jam" };
+        if (now.john.from != null) ask.from = now.john.from; // "you were here, the note is there"
+        post(ask);
       } else if (now.mode !== was?.mode) {
         const text = {
           listen: "The arm plays. I hum along.",

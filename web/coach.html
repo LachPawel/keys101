@@ -69,12 +69,10 @@
           <div class="phrase" id="phrase" aria-label="The notes of this phrase"></div>
           <p class="score" id="score"></p>
         </div>
-        <!-- Sing: how far your voice was from the note. The middle band is in tune. -->
-        <div class="meter" id="meter" hidden>
-          <span class="meter-end">flat</span>
-          <div class="meter-bar"><i class="meter-ok"></i><i class="meter-dot" id="meter-dot"></i></div>
-          <span class="meter-end">sharp</span>
-          <b class="meter-text" id="meter-text"></b>
+        <!-- Sing: your pitch as a line over the notes, while you sing. The green row is the note to hit. -->
+        <div class="lane" id="lane" hidden>
+          <div class="lane-head"><b id="lane-title">Sing</b><span id="lane-text">sing and hold</span></div>
+          <svg id="lane-svg" viewBox="0 0 1000 208" preserveAspectRatio="none" aria-label="Your pitch over time against the note"></svg>
         </div>
         <div class="board">
           <div class="arm-lane" aria-hidden="true"><span class="arm-mark" id="arm-mark">arm</span></div>
