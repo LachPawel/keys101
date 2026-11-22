@@ -1,19 +1,18 @@
 // Keys101: the page of scripts/keys_coach.py. It shows the coach's state and sends your choices back.
-// Everything it shows comes from the server as one JSON state (GET /events). It sends: a mode to start,
-// stop, a key you clicked, and the jam's answer style (POST /cmd).
+// Everything it shows comes from the server as one JSON state (GET /events). It sends: a lesson or a mode to
+// start, stop, a key you clicked (POST /cmd). One screen: the words, the keyboard, and a dock with the course
+// on the left and free play on the right.
 
 const NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-const SYLLABLE = { 0: "do", 2: "re", 4: "mi", 5: "fa", 7: "sol", 9: "la", 11: "si" };
 // Computer keys for one octave and a bit from C4, like a tracker: A W S E D F T G Y H U J K.
 const COMPUTER = { a: 0, w: 1, s: 2, e: 3, d: 4, f: 5, t: 6, g: 7, y: 8, h: 9, u: 10, j: 11, k: 12, o: 13, l: 14 };
-const MODE_WORD = { learn: "Learn", watch: "Watch and repeat", together: "Play together", jam: "Jam" };
+const MODE_WORD = { learn: "Learn", watch: "Repeat", together: "Together", jam: "Jam" };
 
 export const isBlack = (midi) => NAMES[midi % 12].endsWith("#");
 export const noteName = (midi) => `${NAMES[midi % 12]}${Math.floor(midi / 12) - 1}`;
 
 const $ = (id) => document.getElementById(id);
 let state = null;
-let selected = null; // the song picked on this page
 let drawnRange = "";
 let drawnSongs = "";
 let drawnCourse = "";
@@ -30,8 +29,6 @@ function send(body) {
 function connect() {
   const events = new EventSource("/events");
   events.addEventListener("state", (event) => render(JSON.parse(event.data)));
-  events.onopen = () => $("chip-live").classList.add("on");
-  events.onerror = () => $("chip-live").classList.remove("on");
 }
 
 // ---------------------------------------------------------------- sound
@@ -40,22 +37,23 @@ let audio = null;
 function ensureAudio() {
   if (!audio) audio = new AudioContext();
   if (audio.state === "suspended") audio.resume();
+  $("chip-sound").hidden = true;
   return audio;
 }
 
 /** A plucked, piano-ish tone: a few harmonics with a fast attack and a long decay. */
 function tone(midi, seconds = 1.2) {
-  const ctx = ensureAudio();
+  if (!audio) return; // no sound before the first click: the browser would refuse it anyway
   const hz = 440 * 2 ** ((midi - 69) / 12);
-  const out = ctx.createGain();
-  const t = ctx.currentTime;
+  const out = audio.createGain();
+  const t = audio.currentTime;
   out.gain.setValueAtTime(0.0001, t);
   out.gain.exponentialRampToValueAtTime(0.22, t + 0.005);
   out.gain.exponentialRampToValueAtTime(0.0001, t + seconds);
-  out.connect(ctx.destination);
+  out.connect(audio.destination);
   [1, 0.45, 0.25, 0.12].forEach((level, i) => {
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
+    const osc = audio.createOscillator();
+    const gain = audio.createGain();
     osc.frequency.value = hz * (i + 1);
     gain.gain.value = level;
     osc.connect(gain).connect(out);
@@ -76,7 +74,7 @@ function buildKeys(lo, hi) {
     const key = document.createElement("div");
     key.className = `key ${isBlack(m) ? "black" : "white"}`;
     key.dataset.midi = String(m);
-    key.innerHTML = `<i class="reach"></i><span class="name">${noteName(m)}</span><span class="solf">${SYLLABLE[m % 12] ?? ""}</span>`;
+    key.innerHTML = `<i class="reach"></i><span class="name">${noteName(m)}</span>`;
     if (isBlack(m)) {
       const left = whites.indexOf(m - 1);
       key.style.left = `calc(${(left + 1) * width}% - ${width * 0.3}%)`;
@@ -114,40 +112,26 @@ function placeArm(arm) {
   const box = $("keys").getBoundingClientRect();
   const r = el.getBoundingClientRect();
   mark.style.left = `${r.left - box.left + r.width / 2}px`;
-  mark.textContent = arm.pressing != null ? "arm presses" : "arm";
+  mark.textContent = arm.pressing != null ? "arm plays" : "arm";
   mark.classList.toggle("pressing", arm.pressing != null);
   mark.classList.add("on");
 }
 
-// ---------------------------------------------------------------- render
+// ---------------------------------------------------------------- the dock
 
-function renderSongs(songs) {
-  const key = JSON.stringify(songs) + selected;
-  if (key === drawnSongs) return;
-  drawnSongs = key;
-  const box = $("songs");
-  box.innerHTML = "";
-  for (const song of songs) {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = song.name === selected ? "sel" : "";
-    b.innerHTML = `<span>${song.title}</span><small>level ${song.level} · ${song.notes} notes</small>`;
-    b.addEventListener("click", () => {
-      selected = song.name;
-      renderSongs(songs);
-    });
-    box.appendChild(b);
+function renderSongs(next) {
+  const key = JSON.stringify(next.songs);
+  const select = $("song");
+  if (key !== drawnSongs) {
+    drawnSongs = key;
+    const chosen = select.value;
+    select.innerHTML = next.songs.map((s) => `<option value="${s.name}">${s.title}</option>`).join("");
+    if (chosen) select.value = chosen;
   }
-  const chosen = songs.find((s) => s.name === selected);
-  if (chosen?.about) {
-    const p = document.createElement("p");
-    p.className = "about";
-    p.textContent = chosen.about;
-    box.appendChild(p);
-  }
+  if (next.song && next.mode && !next.lesson) select.value = next.song.name;
 }
 
-/** The course: one row per lesson. Done lessons can be replayed, the next one is open, the rest are locked. */
+/** The course: a row of numbered steps. Done ones can be replayed, the next one is open, the rest are locked. */
 function renderCourse(next) {
   const key = JSON.stringify([next.course, next.lesson]);
   if (key !== drawnCourse) {
@@ -156,12 +140,14 @@ function renderCourse(next) {
     list.innerHTML = "";
     next.course.forEach((lesson, i) => {
       const item = document.createElement("li");
+      if (i > 0 && next.course[i - 1].status === "done") item.className = "after-done";
       const b = document.createElement("button");
       b.type = "button";
       b.className = `${lesson.status}${next.lesson === lesson.id ? " running" : ""}`;
       b.disabled = lesson.status === "locked";
-      const mark = lesson.status === "done" ? "\u2713" : String(i + 1);
-      b.innerHTML = `<span class="mark">${mark}</span><b>${lesson.title}</b><small>${lesson.goal}</small>`;
+      b.textContent = lesson.status === "done" ? "✓" : String(i + 1);
+      b.title = `${lesson.title}: ${lesson.goal}`;
+      b.setAttribute("aria-label", `Lesson ${i + 1}, ${lesson.title}, ${lesson.status}`);
       b.addEventListener("click", () => {
         ensureAudio();
         send({ do: "lesson", id: lesson.id });
@@ -169,13 +155,23 @@ function renderCourse(next) {
       item.appendChild(b);
       list.appendChild(item);
     });
+    const at = next.course.findIndex((l) => l.id === next.lesson);
+    const upcoming = at >= 0 ? at : next.course.findIndex((l) => l.status === "open");
+    const caption = $("caption");
+    if (upcoming >= 0) {
+      const lesson = next.course[upcoming];
+      caption.innerHTML = `<b>${at >= 0 ? "Now" : "Next"}: ${lesson.title}.</b> ${lesson.goal}.`;
+    } else {
+      caption.innerHTML = next.course.length ? "<b>Course finished.</b> Replay any lesson, or play freely." : "";
+    }
   }
-  // Hearts only show inside a lesson: free practice costs nothing.
-  const hearts = $("hearts");
-  hearts.innerHTML = next.hearts == null ? "" : [0, 1, 2].map((i) => `<i class="${i < next.hearts ? "" : "lost"}">\u2665\uFE0E</i>`).join("");
+  // Hearts only show inside a lesson: free play costs nothing.
+  $("hearts").innerHTML = next.hearts == null ? "" : [0, 1, 2].map((i) => `<i class="${i < next.hearts ? "" : "lost"}">♥︎</i>`).join("");
   $("xp").textContent = next.xp;
   $("days").textContent = next.days;
 }
+
+// ---------------------------------------------------------------- render
 
 function render(next) {
   const was = state;
@@ -185,9 +181,8 @@ function render(next) {
     buildKeys(lo, hi);
     drawnRange = `${lo}-${hi}`;
   }
-  if (!selected && next.songs.length) selected = next.songs[0].name;
-  if (next.song && next.mode) selected = next.song.name;
-  renderSongs(next.songs);
+  renderSongs(next);
+  renderCourse(next);
 
   $("chip-arm").textContent = next.arm.name || "Arm";
   $("chip-arm").classList.toggle("on", !!next.arm.name);
@@ -202,6 +197,9 @@ function render(next) {
   $("small").textContent = next.small;
 
   $("phrase").innerHTML = next.notes.map((n) => `<span class="${n.status}">${n.name}</span>`).join("");
+  const s = next.score;
+  const where = next.phrases ? `phrase ${next.phrase + 1} of ${next.phrases} · ` : "";
+  $("score").innerHTML = s.right + s.wrong ? `${where}<b>${s.right}</b> right · <b>${s.wrong}</b> ${s.wrong === 1 ? "slip" : "slips"}` : "";
 
   const reach = new Set(next.reach);
   const down = new Set(next.keys_down);
@@ -226,14 +224,7 @@ function render(next) {
   }
   lastPress = Math.max(lastPress, ...next.presses.map((p) => p.id), 0);
 
-  document.querySelectorAll(".modes button").forEach((b) => b.classList.toggle("on", b.dataset.mode === next.mode));
-  $("style").value = next.style;
-  $("right").textContent = next.score.right;
-  $("wrong").textContent = next.score.wrong;
-  $("streak").textContent = next.score.streak;
-  $("where").textContent = next.phrases ? `Phrase ${next.phrase + 1} of ${next.phrases}` : "";
-
-  renderCourse(next);
+  document.querySelectorAll(".modes button").forEach((b) => b.classList.toggle("on", b.dataset.mode === next.mode && !next.lesson));
   john.follow(was, next);
 }
 
@@ -242,7 +233,7 @@ function render(next) {
 const john = (() => {
   const frame = $("john-frame");
   if (new URLSearchParams(location.search).get("chimera") === "0") {
-    $("john").parentElement.hidden = true;
+    $("john").hidden = true;
     return { follow() {} };
   }
   frame.src = "chimera/teacher.html";
@@ -260,10 +251,7 @@ const john = (() => {
     if (data.type === "ready") {
       ready = true;
       while (queue.length) frame.contentWindow.postMessage(queue.shift(), location.origin);
-    } else if (data.type === "started") {
-      started = true;
-      $("john-hint").hidden = true;
-    }
+    } else if (data.type === "started") started = true;
   });
   const nudge = () => {
     ensureAudio();
@@ -282,7 +270,7 @@ const john = (() => {
           watch: "Watch the arm, then play it back.",
           together: "You lead. The arm and I follow.",
           jam: "Jam time. I do backing vocals.",
-          "": "Pick a song. I'll warm up my vocal folds.",
+          "": "Pick a lesson. I'll warm up my vocal folds.",
         }[now.mode] ?? null;
         if (text) post({ type: "idle", text });
       }
@@ -295,14 +283,13 @@ const john = (() => {
 document.querySelectorAll(".modes button").forEach((b) => {
   b.addEventListener("click", () => {
     ensureAudio();
-    send({ do: "start", mode: b.dataset.mode, song: selected });
+    send({ do: "start", mode: b.dataset.mode, song: $("song").value });
   });
 });
 $("stop").addEventListener("click", () => send({ do: "stop" }));
 $("reset").addEventListener("click", () => {
   if (confirm("Start the course over? Your XP and finished lessons are cleared.")) send({ do: "reset_course" });
 });
-$("style").addEventListener("change", (event) => send({ do: "style", style: event.target.value }));
 window.addEventListener("keydown", (event) => {
   if (event.repeat || event.metaKey || event.ctrlKey || event.target.tagName === "SELECT") return;
   const step = COMPUTER[event.key.toLowerCase()];

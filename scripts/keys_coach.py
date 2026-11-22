@@ -50,6 +50,8 @@ LESSONS = Path(__file__).with_name("lessons")
 BOARD = ROOT / "keys_board.json"
 POSES = ROOT / "keys_poses.json"  # the sticker keys of keys_scripted.py, used when there is no board yet
 LAYOUT = ROOT / "keys_layout.json"  # the note under every sticker, shared with keys_scripted.py
+# More taught keys, each set with its own layout: the arm can point at and press them too.
+EXTRA_SETS = [(ROOT / "keys_poses_sharps.json", ROOT / "keys_layout_sharps.json")]
 WEB = ROOT / "web"
 
 NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
@@ -260,6 +262,12 @@ def load_board(
             if f"above_{key}" in poses and f"down_{key}" in poses:
                 board.keys[midi] = {"above": poses[f"above_{key}"], "down": poses[f"down_{key}"]}
         board.home, board.rest = poses.get("home"), poses.get("rest")
+    for extra_poses, extra_layout in EXTRA_SETS if poses_path == POSES else []:  # the rig's own poses only
+        if extra_poses.exists() and extra_layout.exists():
+            poses = json.loads(extra_poses.read_text())["poses"]
+            for key, midi in read_stickers(extra_layout).items():
+                if midi not in board.keys and f"above_{key}" in poses and f"down_{key}" in poses:
+                    board.keys[midi] = {"above": poses[f"above_{key}"], "down": poses[f"down_{key}"]}
     return board
 
 
@@ -338,8 +346,8 @@ class State:
             "notes": [],  # the current phrase: {"midi", "name", "status": todo | now | ok | miss}
             "target": None,  # the key you should play now
             "arm": {"at": None, "pressing": None, "how": "", "name": ""},
-            "big": "Pick a song",
-            "small": "Then choose how to practise it.",
+            "big": "Pick a lesson",
+            "small": "The arm shows you each key and waits for you.",
             "tone": "",
             "presses": [],  # the newest key presses: {"id", "midi", "who": you | arm | ghost, "ok"}
             "keys_down": [],
@@ -573,6 +581,11 @@ class SimArm:
         pass
 
 
+# A black key is narrow and, pressed fast, the gripper overshoots and brushes the white key next to it (21 of
+# 22 misses in the trial). From taught poses it is pressed this many times slower.
+BLACK_SLOWER = 3.0
+
+
 @dataclass
 class Speeds:
     travel: float = 120.0  # mean joint speed between keys, deg/s
@@ -629,9 +642,10 @@ class ScriptedArm:
         keys = self.board.keys[midi]
         self.state.set(arm={**self.state.get("arm"), "pressing": midi, "how": "scripted"})
         self.ears.expect(midi, 2.0)
-        self._move(keys["down"], self.speeds.down)
+        down = self.speeds.down * (BLACK_SLOWER if is_black(midi) else 1.0)
+        self._move(keys["down"], down)
         self._move(keys["down"], self.speeds.hold)
-        self._move(keys["above"], self.speeds.down)
+        self._move(keys["above"], down)
         self.state.set(arm={**self.state.get("arm"), "pressing": None})
 
     def away(self) -> None:
@@ -666,6 +680,8 @@ class PolicyArm:
         speeds: Speeds,
         prompts: str = "notes",
         policy_keys: list[int] | None = None,
+        lock_reachy: bool = False,
+        policy_speed: float = 1.0,
     ) -> None:
         import keys_play
 
@@ -678,7 +694,10 @@ class PolicyArm:
         self.prompts = prompts
         self.policy_keys = set(policy_keys or (POLICY_WORDS if prompts == "flow" else STICKERS.values()))
         task = keys_play.task_text("do")
-        command, self.label = keys_play.build_command(model, task, 0.0, port, None, True, 60, 1.0)
+        # Keys101 never moves Reachy's head, and a head that is sent back lands a few degrees off: so by
+        # default it is left exactly where it is. lock_reachy sends it to the saved pose before each press.
+        self.lock_reachy = lock_reachy
+        command, self.label = keys_play.build_command(model, task, 0.0, port, None, True, 60, policy_speed)
         command.append("--interactive=true")
         if not any(arg.startswith("--inference.action_starvation_grace_s") for arg in command):
             command.append("--inference.action_starvation_grace_s=8")
@@ -719,8 +738,9 @@ class PolicyArm:
             keys = self.board.keys[midi]
             self.state.set(arm={**self.state.get("arm"), "pressing": midi, "how": "scripted"})
             self.ears.expect(midi, 2.0)
-            self.goto(keys["down"], self.speeds.down + self.speeds.hold)
-            self.goto(keys["above"], self.speeds.down)
+            down = self.speeds.down * (BLACK_SLOWER if is_black(midi) else 1.0)
+            self.goto(keys["down"], down + self.speeds.hold)
+            self.goto(keys["above"], down)
             self.state.set(arm={**self.state.get("arm"), "pressing": None})
 
     def task(self, midi: int) -> str:
@@ -734,10 +754,11 @@ class PolicyArm:
     def _policy_press(self, midi: int, any_note: bool = False) -> None:
         """One press by the policy. Returns once its note has sounded, or after 12 seconds. any_note: also
         return when a different key sounds (the scorer: a wrong key is an answer too)."""
-        with contextlib.suppress(Exception):  # Reachy is the policy's camera: its head goes to the saved pose
-            import keys_reachy
+        if self.lock_reachy:  # Reachy is the policy's camera: send its head to the saved pose first
+            with contextlib.suppress(Exception):
+                import keys_reachy
 
-            keys_reachy.lock()
+                keys_reachy.lock()
         self.state.set(arm={**self.state.get("arm"), "at": midi, "pressing": midi, "how": "policy"})
         self.ears.expect(midi, 60.0 if self.first else 12.0)
         self.tell(f"/subtask {self.task(midi)}")
@@ -998,7 +1019,7 @@ class Coach:
                 tone="miss", target=None,
             )  # fmt: skip
         except Stopped:
-            self.state.set(big="Stopped", small="Pick a song or a mode.", target=None)
+            self.state.set(big="Stopped", small="Pick a lesson, or play freely.", target=None)
         except Exception as e:  # noqa: BLE001  the page must show it, the server must keep running
             self.state.set(big="Something went wrong", small=str(e)[:200], target=None)
             import traceback
@@ -1424,8 +1445,9 @@ def score(args: argparse.Namespace) -> None:
         sys.exit("The scorer needs the MIDI keyboard: it says which key the policy pressed.")
     learned = [note_midi(n) for n in args.policy_keys] if args.policy_keys else None
     arm = PolicyArm(
-        load_board(args.board), ears, state, args.model, args.robot_port, Speeds(), args.prompts, learned
-    )
+        load_board(args.board), ears, state, args.model, args.robot_port, Speeds(), args.prompts, learned,
+        args.lock_reachy, args.policy_speed,
+    )  # fmt: skip
     keys = sorted(arm.policy_keys)
     rng = random.Random(101)
     order = [key for _ in range(args.rounds) for key in rng.sample(keys, len(keys))]
@@ -1508,6 +1530,15 @@ def main(argv: list[str] | None = None) -> None:
         help="The keys the policy may press (default: every sticker key in keys_layout.json). "
         "Fewer, e.g. C3 D3 E3 F3 G3 A3, leaves the others to the taught poses",
     )
+    parser.add_argument(
+        "--lock-reachy",
+        action="store_true",
+        help="Send Reachy's head to its saved pose before each policy press",
+    )
+    parser.add_argument(
+        "--policy-speed", type=float, choices=(1.0, 1.5, 2.0), default=1.0,
+        help="Play the policy's moves this many times faster than it was shown them",
+    )  # fmt: skip
     parser.add_argument("--robot-port", default="/dev/tty.usbmodem5B415331661")
     parser.add_argument("--robot-id", default="workshop_so101")
     parser.add_argument("--midi", default="auto", help='Part of the keyboard\'s name, or "none"')
@@ -1559,7 +1590,10 @@ def main(argv: list[str] | None = None) -> None:
         arm = ScriptedArm(board, ears, state, args.robot_port, args.robot_id, speeds)
     elif args.arm == "policy":
         learned = [note_midi(n) for n in args.policy_keys] if args.policy_keys else None
-        arm = PolicyArm(board, ears, state, args.model, args.robot_port, speeds, args.prompts, learned)
+        arm = PolicyArm(
+            board, ears, state, args.model, args.robot_port, speeds, args.prompts, learned,
+            args.lock_reachy, args.policy_speed,
+        )  # fmt: skip
     else:
         arm = SimArm(ears, state, board if board.reach else None)
     lo, hi = note_midi(args.range[0]), note_midi(args.range[1])
@@ -1576,8 +1610,8 @@ def main(argv: list[str] | None = None) -> None:
         reach=reach,
         sound=sound,
         arm={"at": None, "pressing": None, "how": "", "name": arm.name},
-        big="Pick a song",
-        small="Then choose how to practise it.",
+        big="Pick a lesson",
+        small="The arm shows you each key and waits for you.",
     )
     coach = Coach(arm, ears, state, songs, Settings(bass_learned=args.bass == "policy"))
     web = WEB.resolve()

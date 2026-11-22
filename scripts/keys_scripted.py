@@ -34,6 +34,7 @@ import argparse
 import itertools
 import json
 import math
+import os
 import sys
 import threading
 import time
@@ -61,7 +62,8 @@ Pose = dict[str, float]
 # Keys101 plays more than six keys. keys_layout.json in the repository root names the note under every
 # sticker, in sticker order. With it, this script teaches, tests and records that many keys and labels each
 # press with its note ("press E3"). Without it: the six sticker keys, labelled "press key 3".
-LAYOUT = Path(__file__).resolve().parent.parent / "keys_layout.json"
+# KEYS_LAYOUT=keys_layout_sharps.json picks another set of keys, with its own poses file (--poses).
+LAYOUT = Path(os.environ.get("KEYS_LAYOUT") or Path(__file__).resolve().parent.parent / "keys_layout.json")
 
 
 def read_layout(path: Path = LAYOUT) -> list[str]:

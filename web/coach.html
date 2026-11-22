@@ -10,84 +10,59 @@
   </head>
   <body>
     <header class="top">
-      <div>
-        <h1><img class="logo" src="img/logo.svg" alt="" width="34" height="34" />Keys101</h1>
-        <p class="tagline">The SO-101 teaches you a song on the keyboard, then plays it with you.</p>
+      <h1><img class="logo" src="img/logo.svg" alt="" width="28" height="28" />Keys101</h1>
+      <div class="stats" aria-label="Your progress">
+        <span class="hearts" id="hearts" aria-label="Hearts left"></span>
+        <span><b id="xp">0</b> XP</span>
+        <span><b id="days">0</b> day streak</span>
       </div>
       <div class="chips">
+        <span class="chip" id="chip-sound">Click once for sound</span>
         <span class="chip" id="chip-arm">Arm</span>
         <span class="chip" id="chip-midi">MIDI keyboard</span>
-        <span class="chip" id="chip-live">Live</span>
       </div>
     </header>
 
     <main>
-      <section class="play" aria-label="The keyboard">
-        <p class="eyebrow" id="eyebrow">Keys101</p>
-        <p class="big" id="big">Pick a song</p>
-        <p class="small" id="small">Then choose how to practise it.</p>
-
-        <div class="phrase" id="phrase" aria-label="The notes of this phrase"></div>
-
-        <div class="board">
-          <div class="arm-lane" id="arm-lane" aria-hidden="true"><span class="arm-mark" id="arm-mark">arm</span></div>
-          <div class="keys" id="keys" role="group" aria-label="Piano keys: click to play"></div>
+      <section class="say">
+        <div class="words">
+          <p class="eyebrow" id="eyebrow">Keys101</p>
+          <p class="big" id="big">Pick a lesson</p>
+          <p class="small" id="small">The arm shows you each key and waits for you.</p>
         </div>
-        <p class="legend">
-          <span><i class="lg-target"></i>your next key</span>
-          <span><i class="lg-arm"></i>the arm</span>
-          <span><i class="lg-reach"></i>keys the arm can reach</span>
-          <span class="right">Click a key, or play it on the keyboard. Computer keys A to K work too.</span>
-        </p>
+        <div class="john" id="john"><iframe id="john-frame" title="John, a 3D singing head (Chimera)" allow="autoplay"></iframe></div>
       </section>
 
-      <aside class="panel">
-        <section class="card course-card">
-          <p class="label">Your course
-            <span class="stats"><span class="hearts" id="hearts" aria-label="Hearts left"></span><b id="xp">0</b> XP <span class="sep">·</span> <b id="days">0</b> day streak</span>
-          </p>
-          <ol class="course" id="course"></ol>
-          <button type="button" id="reset" class="quiet">Start the course over</button>
-        </section>
+      <div class="row">
+        <div class="phrase" id="phrase" aria-label="The notes of this phrase"></div>
+        <p class="score" id="score"></p>
+      </div>
 
-        <section class="card">
-          <p class="label">Free practice: song</p>
-          <div class="songs" id="songs"></div>
-        </section>
-
-        <section class="card">
-          <p class="label">Free practice: how</p>
-          <div class="modes">
-            <button type="button" data-mode="learn"><b>Learn</b><small>The arm shows you each key</small></button>
-            <button type="button" data-mode="watch"><b>Watch and repeat</b><small>It plays a phrase, you play it back</small></button>
-            <button type="button" data-mode="together"><b>Play together</b><small>You lead, the arm plays along</small></button>
-            <button type="button" data-mode="jam"><b>Jam</b><small>You play, it answers</small></button>
-          </div>
-          <div class="row">
-            <label class="style">Answer
-              <select id="style" aria-label="How the arm answers in a jam">
-                <option value="echo">echo</option>
-                <option value="mirror">upside down</option>
-                <option value="turns">take turns</option>
-              </select>
-            </label>
-            <button type="button" id="stop" class="stop">Stop</button>
-          </div>
-        </section>
-
-        <section class="card score">
-          <p class="label">Score</p>
-          <p><b id="right">0</b> right <span class="sep">·</span> <b id="wrong">0</b> slips <span class="sep">·</span> streak <b id="streak">0</b></p>
-          <p class="where" id="where"></p>
-        </section>
-
-        <section class="card john-card">
-          <p class="label">John sings the notes</p>
-          <div class="john" id="john"><iframe id="john-frame" title="John, a 3D singing head (Chimera)" allow="autoplay"></iframe></div>
-          <p class="hint" id="john-hint">Click anywhere once so John and the piano can make sound.</p>
-        </section>
-      </aside>
+      <div class="board">
+        <div class="arm-lane" aria-hidden="true"><span class="arm-mark" id="arm-mark">arm</span></div>
+        <div class="keys" id="keys" role="group" aria-label="Piano keys: click to play"></div>
+      </div>
     </main>
+
+    <footer class="dock">
+      <section class="path" aria-label="Your course">
+        <p class="label">Course</p>
+        <ol class="course" id="course"></ol>
+        <p class="caption" id="caption"></p>
+        <button type="button" id="reset" class="quiet" title="Start the course over">Start over</button>
+      </section>
+      <section class="free" aria-label="Free play">
+        <p class="label">Free play</p>
+        <select id="song" aria-label="Song"></select>
+        <div class="modes">
+          <button type="button" data-mode="learn" title="The arm shows you each key">Learn</button>
+          <button type="button" data-mode="watch" title="The arm plays a phrase, you play it back">Repeat</button>
+          <button type="button" data-mode="together" title="You lead, the arm plays the bass">Together</button>
+          <button type="button" data-mode="jam" title="You play, the arm answers">Jam</button>
+        </div>
+        <button type="button" id="stop" class="stop">Stop</button>
+      </section>
+    </footer>
 
     <script type="module" src="js/coach.js"></script>
   </body>
