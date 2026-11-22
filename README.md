@@ -4,6 +4,12 @@ An SO-101 robot arm teaches you a song on a small MIDI keyboard, then plays it w
 the teacher you talk to: it works out what you want, and its head camera is the arm's only eye. Built at
 HackLab #2 in Berlin (22 November 2026) on top of the SO-101 Piano Teacher below.
 
+**Watch the three-minute demo:** [YouTube](https://youtu.be/V5HCgUEM5rY) ·
+[the video file on Google Drive](https://drive.google.com/file/d/16pSH4EHyPetboCDCLgqJ06xjI9Kzsdf0/view?usp=sharing) ·
+[the slides](https://drive.google.com/file/d/1Q-5JDIACw-7F8G2CWU52m7ZFYnHq4Hqp/view?usp=sharing)
+
+[![Watch the demo on YouTube](https://img.youtube.com/vi/V5HCgUEM5rY/hqdefault.jpg)](https://youtu.be/V5HCgUEM5rY)
+
 ![The roadmap: seven lessons, then free play](docs/roadmap.png)
 
 ![A lesson: the arm points at the next key and waits for you](docs/lesson.png)
