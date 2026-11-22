@@ -655,7 +655,7 @@ class Speeds:
     travel: float = 120.0  # mean joint speed between keys, deg/s
     min_travel: float = 0.25
     down: float = 0.12  # seconds from above the key to pressed, and the same back
-    hold: float = 0.08
+    hold: float = 0.4  # seconds the key stays down: the note rings this long
     fps: int = 50
 
 
@@ -809,7 +809,7 @@ class PolicyArm:
             self.ears.expect(midi, 2.0)
             slower = (2.0 if self.fast else BLACK_SLOWER) if is_black(midi) else 1.0
             down = self.speeds.down * slower
-            self.goto(keys["down"], down + (0.03 if self.fast else self.speeds.hold))
+            self.goto(keys["down"], down + self.speeds.hold * (0.6 if self.fast else 1.0))
             self.goto(keys["above"], 0.1 * slower if self.fast else down)
             self.state.set(arm={**self.state.get("arm"), "pressing": None})
 
@@ -854,6 +854,7 @@ class PolicyArm:
         deadline = time.monotonic() + (60.0 if self.first else 12.0)
         self.first = False
         seen = self.state.press_id
+        sounded = lifted = False
         try:
             while time.monotonic() < deadline:
                 if self.ears.stop.is_set():
@@ -861,14 +862,32 @@ class PolicyArm:
                 with self.ears.lock:
                     pending = any(m == midi for m, _ in self.ears.expected)
                 if not pending or (any_note and self.state.press_id != seen):  # the note sounded
+                    sounded = True
                     break
-                time.sleep(0.02)
-            # A policy trained on keys_scripted.py's presses lifts off the key by itself: give it the time.
-            time.sleep(self.keys_play.HOLD_S if self.prompts == "flow" else 0.7)
+                time.sleep(0.01)
+            if (
+                sounded
+                and not any_note
+                and self.prompts != "flow"
+                and self.speeds.hold > 0.1
+                and self.board.reaches(midi)
+            ):
+                # The policy learned short presses. Freeze it the moment the note sounds, with the key still
+                # down, let the note ring, then lift straight up to the taught pose above this key.
+                self.tell("/pause")
+                time.sleep(self.speeds.hold)
+                above = json.dumps(self.board.keys[midi]["above"], separators=(",", ":"))
+                self.tell(f"/goto {above} 0.25")
+                lifted = True
+                time.sleep(0.3)
+            else:
+                # A policy trained on keys_scripted.py's presses lifts off the key by itself: give it the time.
+                time.sleep(self.keys_play.HOLD_S if self.prompts == "flow" else 0.7)
         finally:
             self.ears.unexpect(midi)
             # The flow policy only learned presses and leaves its finger on the key: lift it. Then wait in the air.
-            self.tell("/pause 4" if self.prompts == "flow" else "/pause")
+            if not lifted:
+                self.tell("/pause 4" if self.prompts == "flow" else "/pause")
             self.at = None
             self.state.set(arm={**self.state.get("arm"), "pressing": None})
             time.sleep(0.5)
@@ -1855,6 +1874,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--range", nargs=2, default=("C3", "C5"), metavar=("LOW", "HIGH"), help="Keys drawn")
     parser.add_argument("--speed", type=float, default=120.0, help="Scripted moves between keys, deg/s")
     parser.add_argument(
+        "--hold",
+        type=float,
+        default=0.4,
+        help="Seconds the arm keeps a key down, so the note rings (0.08 is the old short tap)",
+    )
+    parser.add_argument(
         "--listen",
         choices=("poses", "policy"),
         default="poses",
@@ -1898,7 +1923,7 @@ def main(argv: list[str] | None = None) -> None:
     midi = ears.open_midi(args.midi)
     songs = load_songs()
     board = load_board(args.board)
-    speeds = Speeds(travel=args.speed)
+    speeds = Speeds(travel=args.speed, hold=args.hold)
     arm: Arm
     if args.arm == "scripted":
         arm = ScriptedArm(board, ears, state, args.robot_port, args.robot_id, speeds)
