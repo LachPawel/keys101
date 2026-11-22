@@ -29,7 +29,12 @@ turns back to the keys before the arm plays.
 
 - **The arm's brain:** SmolVLA with the vision encoder unfrozen, trained on a dataset the arm recorded by
   itself: it pressed sticker keys from poses taught once, and MIDI checked and labelled every press
-  ("press E3"). No leader arm, no teleoperation. See [RECORDING.md](RECORDING.md).
+  ("press E3"). The earlier experiments below were recorded by hand with the leader arm; this one had a
+  single day, so the arm did the recording. See [RECORDING.md](RECORDING.md).
+- **One press, one subtask:** a song is too long for one skill, so it is cut into subtasks. Every episode is
+  one press with its own instruction, written by the script and confirmed by MIDI, never by hand. At run
+  time the coach sends the next subtask note by note, and real-time chunking blends the policy's action
+  chunks: 30 policy steps and 60 motor commands a second.
 - **Camera only against camera and ears:** the same episodes trained two policies. One sees Reachy's
   camera; the other also gets the keyboard's sound drawn as a spectrogram, as a second camera.
 - **Scored by MIDI:** every press is judged by the keyboard itself, so the numbers below needed no human.
@@ -74,6 +79,15 @@ SmolVLA on Hugging Face Jobs.
 | Camera and ears, all keys | 12 white, 10 black | 17 of 22 |
 
 The 22-key policy had 160 good black-key episodes against 595 white ones, and black keys are narrow.
+
+**Sound helped before, and not today.** In the earlier experiment (leader arm, 134 episodes, 5,000 steps)
+the policy with ears pressed a key exactly once in 7 of 13 runs, against 2 of 12 for camera only: it knew
+when to stop. Today, with 595 scripted episodes, camera only was better at finding the right key. Those are
+two different questions and small samples, so this is an open result, not a conclusion.
+
+Other checks, all counted by MIDI: after Reachy's head looked away and came back, the camera policy pressed
+24 of 24 keys right. With the keyboard moved about a centimetre it still got 46 of 60, while the fixed
+taught poses missed 3 of 5 keys.
 
 ## Run it
 
