@@ -17,7 +17,7 @@ How a request travels: GPT-Live-1 hears you and hands the job to this script ("d
 what you said, lets the arm play or runs the lesson, and tells GPT-Live-1 what happened, which it then says
 out loud. While the arm plays and while you sing, GPT-Live-1's ears are closed, so it does not answer the piano.
 
-Needs OPENAI_API_KEY (from the environment, else ~/code/codex/.env). With the arm, the piano must be running
+Needs OPENAI_API_KEY (from the environment, else .env in the repository root, else ~/code/codex/.env). With the arm, the piano must be running
 with its ears cable first: scripts/keys_synth.py --ears "BlackHole 2ch". Use headphones, or keep the default
 half-duplex mode, where the microphone is closed while the teacher speaks.
 """
@@ -58,6 +58,7 @@ MODEL = "gpt-live-1"
 RATE = 16000  # one rate for the microphone, Voice Focus, SwiftF0 and GPT-Live-1
 BLOCK = 320  # 20 ms
 ENV_FILE = Path.home() / "code" / "codex" / ".env"
+LOCAL_ENV = Path(__file__).resolve().parent.parent / ".env"  # gitignored
 CLIPS = Path(__file__).resolve().parent.parent / "outputs" / "keys_voice" / "sung"
 LESSON_NOTES = ["mi", "sol", "la"]  # the keys the policy presses most reliably
 # The lesson goes round these, a new order each round, so it is never the same three notes twice in a row.
@@ -220,12 +221,13 @@ what to do with the voice instead. Do not invite the user to sing unless the bac
 def api_key(env_file: Path = ENV_FILE) -> str:
     if key := os.environ.get("OPENAI_API_KEY"):
         return key
-    if env_file.exists():
-        for line in env_file.read_text().splitlines():
-            name, _, value = line.partition("=")
-            if name.strip().removeprefix("export ") == "OPENAI_API_KEY" and value.strip():
-                return value.strip().strip("\"'")
-    sys.exit(f"No OpenAI key: set OPENAI_API_KEY or add it to {env_file}")
+    for path in (LOCAL_ENV, env_file):  # the repository's own .env first
+        if path.exists():
+            for line in path.read_text().splitlines():
+                name, _, value = line.partition("=")
+                if name.strip().removeprefix("export ") == "OPENAI_API_KEY" and value.strip():
+                    return value.strip().strip("\"'")
+    sys.exit(f"No OpenAI key: set OPENAI_API_KEY or add it to {LOCAL_ENV}")
 
 
 def to_pcm(audio: NDArray[np.float32]) -> str:

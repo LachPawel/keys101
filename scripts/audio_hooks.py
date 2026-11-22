@@ -34,18 +34,20 @@ TYTO_DIMENSIONS = (
     "codec_degradation",
 )
 DEFAULT_ENV_FILE = Path.home() / "code" / "codex" / ".env"
+LOCAL_ENV = Path(__file__).resolve().parent.parent / ".env"  # gitignored
 MODELS_DIR = Path("outputs/aic_models")
 
 
 def license_key(env_file: Path = DEFAULT_ENV_FILE) -> str:
     if key := os.environ.get("AIC_SDK_LICENSE"):
         return key
-    if env_file.exists():
-        for line in env_file.read_text().splitlines():
-            name, _, value = line.partition("=")
-            if name.strip().removeprefix("export ") == "AIC_SDK_LICENSE" and value.strip():
-                return value.strip().strip("\"'")
-    sys.exit(f"No ai-coustics key: set AIC_SDK_LICENSE or add it to {env_file}")
+    for path in (LOCAL_ENV, env_file):  # the repository's own .env first
+        if path.exists():
+            for line in path.read_text().splitlines():
+                name, _, value = line.partition("=")
+                if name.strip().removeprefix("export ") == "AIC_SDK_LICENSE" and value.strip():
+                    return value.strip().strip("\"'")
+    sys.exit(f"No ai-coustics key: set AIC_SDK_LICENSE or add it to {LOCAL_ENV}")
 
 
 def _sdk() -> Any:
