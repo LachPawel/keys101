@@ -44,6 +44,9 @@ LOG = ROOT / "outputs" / "keys_scores" / "play_log.jsonl"
 FRONT = '"observation.images.front": "observation.images.camera1"'
 EARS = '"observation.images.ears": "observation.images.camera2"'
 MODELS = {
+    # Keys101 (HackLab #2): SmolVLA base trained on keys_scripted.py record at the venue, prompts "press key N".
+    # Put its pretrained_model folder (or a link to it) here: see RECORDING.md.
+    "keys101": ("outputs/keys_models/keys101", "keys_cameras_midi.json", True),
     # Trained from the SmolVLA base on the 300 note-to-note episodes (keys_flow_train.sh), 10,000 steps.
     # It never saw the trip back to the parked pose: use it with `song ... --flow`.
     "flow": ("outputs/keys_models/flow_10k", "keys_cameras_midi.json", True),

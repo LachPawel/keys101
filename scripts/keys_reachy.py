@@ -132,10 +132,15 @@ class Daemon:
         target = state.get("target_head_pose")
         if not target:
             return False
-        if any(abs(float(target[k]) - float(pose["head"][k])) > 1e-3 for k in ("x", "y", "z", "roll", "pitch", "yaw")):
+        if any(
+            abs(float(target[k]) - float(pose["head"][k])) > 1e-3
+            for k in ("x", "y", "z", "roll", "pitch", "yaw")
+        ):
             return False
         body = state.get("target_body_yaw")
-        return body is None or pose.get("body_yaw") is None or abs(float(body) - float(pose["body_yaw"])) <= 1e-3
+        return (
+            body is None or pose.get("body_yaw") is None or abs(float(body) - float(pose["body_yaw"])) <= 1e-3
+        )
 
 
 def wrap(angle: float) -> float:
@@ -220,13 +225,64 @@ def travel_s(now: dict[str, Any] | None, pose: dict[str, Any]) -> float:
 
 def still(a: dict[str, Any], b: dict[str, Any]) -> bool:
     """Whether two readings of the pose, taken a moment apart, show the head standing still."""
-    if any(abs(wrap(float(a["head"][k]) - float(b["head"][k]))) > STILL_RAD for k in ("roll", "pitch", "yaw")):
+    if any(
+        abs(wrap(float(a["head"][k]) - float(b["head"][k]))) > STILL_RAD for k in ("roll", "pitch", "yaw")
+    ):
         return False
     if any(abs(float(a["head"][k]) - float(b["head"][k])) > STILL_M for k in ("x", "y", "z")):
         return False
     if a.get("body_yaw") is not None and b.get("body_yaw") is not None:
         return abs(float(a["body_yaw"]) - float(b["body_yaw"])) <= STILL_RAD
     return True
+
+
+# Precise lock, for a pose that keeps where the head settled (`held`). The head has play in it: told the same
+# pose, it settles 2 to 3 degrees apart depending on the side it came from (10 to 50 pixels in the camera).
+# So the best lock is no move at all: while the head is still where it was saved (or where the last lock left
+# it), nothing is sent. Otherwise it comes from the same side every time (from above, tilted up by this much,
+# then down onto the pose) and the command is nudged toward `held` a few times.
+APPROACH_RAD = 0.25
+SETTLE_TOL_RAD = 0.01  # about half a degree: a few pixels in the policy's 640x360 view
+_settled: tuple[str, dict[str, Any]] | None = None  # (the saved pose, where the last lock left the head)
+
+
+def settle_error(now: dict[str, Any], held: dict[str, Any]) -> dict[str, float]:
+    return {a: wrap(float(held[a]) - float(now[a])) for a in ("roll", "pitch", "yaw")}
+
+
+def lock_precisely(daemon: Daemon, pose: dict[str, Any], tries: int = 4) -> bool:
+    global _settled
+    key = json.dumps(pose, sort_keys=True)
+    held = pose["held"]
+    now = daemon.pose()
+    for spot in (held, _settled[1] if _settled is not None and _settled[0] == key else None):
+        if spot is not None and max(abs(v) for v in settle_error(now["head"], spot).values()) < SETTLE_TOL_RAD:
+            return True  # nobody moved it: leave it exactly where it is
+    above = {**pose, "head": {**pose["head"], "pitch": float(pose["head"]["pitch"]) - APPROACH_RAD}}
+    travel = travel_s(now, above)
+    daemon.goto(above, travel)
+    time.sleep(travel + 0.1)
+    command = {**pose, "head": dict(pose["head"])}
+    daemon.goto(command, 0.6)
+    time.sleep(1.1)
+    worst = math.inf
+    for _ in range(tries):
+        error = settle_error(daemon.pose()["head"], held)
+        worst = max(abs(v) for v in error.values())
+        if worst < SETTLE_TOL_RAD:
+            break
+        command = {
+            **command,
+            "head": {**command["head"], **{a: command["head"][a] + 0.8 * e for a, e in error.items()}},
+        }
+        daemon.goto(command, 0.4)
+        time.sleep(0.9)
+    else:
+        worst = max(abs(v) for v in settle_error(daemon.pose()["head"], held).values())
+    _settled = (key, daemon.pose()["head"])
+    if worst >= SETTLE_TOL_RAD:
+        print(f"Reachy: the head settled {math.degrees(worst):.1f} degrees from the saved view.")
+    return worst < SETTLE_TOL_RAD
 
 
 def lock(timeout: float = 2.5, daemon: Daemon | None = None) -> bool:
@@ -236,6 +292,13 @@ def lock(timeout: float = 2.5, daemon: Daemon | None = None) -> bool:
     if pose is None:
         return True
     daemon = daemon or Daemon()
+    if pose.get("held") and hasattr(
+        daemon, "aimed_at"
+    ):  # a real daemon and a pose that knows where it settles
+        try:
+            return lock_precisely(daemon, pose)
+        except (OSError, KeyError, TypeError, ValueError):
+            return True
     end = time.time() + timeout
     try:
         now_pose = daemon.pose()
@@ -461,7 +524,11 @@ class ViewMatch:
         points, features = self.orb.detectAndCompute(self.gray(live), None)
         if features is None or self.features is None or len(points) < 10:
             return None
-        pairs = [m[0] for m in self.matcher.knnMatch(features, self.features, k=2) if len(m) == 2 and m[0].distance < 0.75 * m[1].distance]
+        pairs = [
+            m[0]
+            for m in self.matcher.knnMatch(features, self.features, k=2)
+            if len(m) == 2 and m[0].distance < 0.75 * m[1].distance
+        ]
         if len(pairs) < self.MIN_INLIERS:
             return None
         src = np.float32([points[m.queryIdx].pt for m in pairs])
@@ -493,7 +560,9 @@ def advice(m: dict[str, float] | None) -> list[str]:
     elif m["scale"] < 0.92:
         lines.append("The keyboard looks bigger than in training: move it away from Reachy.")
     if abs(m["turn"]) > 6:
-        lines.append(f"The view is turned {abs(m['turn']):.0f} degrees: turn the keyboard to match the outlines.")
+        lines.append(
+            f"The view is turned {abs(m['turn']):.0f} degrees: turn the keyboard to match the outlines."
+        )
     if abs(m["dx"]) > 8 or abs(m["dy"]) > 8 or abs(m["turn"]) > 0.6:
         lines.append("Press A: the head turns to line it up.")
     if not lines:
@@ -530,7 +599,13 @@ STEP_MAX = 0.15  # the most one correction moves an axis
 
 def matched(m: dict[str, float] | None) -> bool:
     """Close enough to the training view to save."""
-    return m is not None and abs(m["dx"]) < 6 and abs(m["dy"]) < 6 and abs(m["turn"]) < 1 and abs(m["scale"] - 1) < 0.04
+    return (
+        m is not None
+        and abs(m["dx"]) < 6
+        and abs(m["dy"]) < 6
+        and abs(m["turn"]) < 1
+        and abs(m["scale"] - 1) < 0.04
+    )
 
 
 def align(daemon: Daemon | None = None, by_hand: bool = False) -> None:
@@ -547,7 +622,9 @@ def align(daemon: Daemon | None = None, by_hand: bool = False) -> None:
     if reference is None:
         raise SystemExit(f"No training view at {REFERENCE}")
     match = ViewMatch(reference)
-    edges = cv2.dilate(cv2.Canny(cv2.GaussianBlur(cv2.cvtColor(reference, cv2.COLOR_BGR2GRAY), (5, 5), 0), 40, 110), None)
+    edges = cv2.dilate(
+        cv2.Canny(cv2.GaussianBlur(cv2.cvtColor(reference, cv2.COLOR_BGR2GRAY), (5, 5), 0), 40, 110), None
+    )
     camera = json.loads(CAMERAS.read_text())["front"]
     size = int(camera["width"]), int(camera["height"])
     cap = cv2.VideoCapture(int(camera["index_or_path"]), cv2.CAP_AVFOUNDATION)
@@ -597,14 +674,19 @@ def align(daemon: Daemon | None = None, by_hand: bool = False) -> None:
         for _ in range(3):
             step = solve3(jacobian, [-error["dx"], -error["dy"], -error["turn"]])
             step = [max(-STEP_MAX, min(STEP_MAX, s)) for s in step]
-            command = {**command, "head": {**command["head"], **{a: command["head"][a] + s for a, s in zip(AXES, step)}}}
+            command = {
+                **command,
+                "head": {**command["head"], **{a: command["head"][a] + s for a, s in zip(AXES, step)}},
+            }
             now = settle_and_measure(command)
             if now is None:
                 return "Auto: lost the match; line up by hand."
             error = now
             if abs(error["dx"]) < 4 and abs(error["dy"]) < 4 and abs(error["turn"]) < 0.5:
                 break
-        return f"Auto: off by {error['dx']:+.0f}, {error['dy']:+.0f} px and {error['turn']:+.1f} deg. S saves."
+        return (
+            f"Auto: off by {error['dx']:+.0f}, {error['dy']:+.0f} px and {error['turn']:+.1f} deg. S saves."
+        )
 
     keys = {ord("j"): ("yaw", 0.01), ord("l"): ("yaw", -0.01), ord("i"): ("pitch", -0.01), ord("k"): ("pitch", 0.01),
             ord("u"): ("roll", -0.01), ord("o"): ("roll", 0.01)}  # fmt: skip
@@ -635,7 +717,9 @@ def align(daemon: Daemon | None = None, by_hand: bool = False) -> None:
             for n, text in enumerate(lines):
                 y = 34 + 32 * n
                 cv2.putText(view, text, (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 4, cv2.LINE_AA)
-                cv2.putText(view, text, (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 1, cv2.LINE_AA)
+                cv2.putText(
+                    view, text, (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 1, cv2.LINE_AA
+                )
             cv2.imshow("Reachy align: orange = training view", view)
             key = cv2.waitKey(30) & 0xFF
             if key in (ord("q"), 27):
@@ -697,7 +781,10 @@ def hold(daemon: Daemon | None = None, tries: int = 5) -> float:
             best = (worst, {**command, "head": dict(command["head"])})
         if worst < 0.015:
             break
-        command = {**command, "head": {**command["head"], **{a: command["head"][a] + 0.7 * error[a] for a in axes}}}
+        command = {
+            **command,
+            "head": {**command["head"], **{a: command["head"][a] + 0.7 * error[a] for a in axes}},
+        }
     assert best is not None
     saved = {**best[1], "held": held}
     POSE_FILE.write_text(json.dumps(saved, indent=2) + "\n")

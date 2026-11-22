@@ -1,0 +1,57 @@
+{
+  "saved": "2026-11-22T09:16:46+0100",
+  "place": "HackLab #2, CIC Berlin, table by the window",
+  "layout": {
+    "keyboard": "Arturia MicroLab, 25 keys C3-C5, octave buttons at default (middle C = C4 = MIDI 60). Stickers 1-6 on C4 D4 E4 F4 G4 A4.",
+    "arm": "SO-101 follower on the player's side of the keyboard (away from the window), reaching over the keys toward Reachy.",
+    "reachy": "Reachy Mini behind the keyboard on the window side, facing the player, centred on the sticker keys, about 25-30 cm from the keyboard's back edge.",
+    "tape": "Tape down the keyboard, the arm's base and Reachy's base before teaching poses. Mark their corners on the table so they can be put back."
+  },
+  "reachy_head": {
+    "file": "reachy_pose.json",
+    "command": {
+      "x": 0.011999696304767098,
+      "y": 9.206356161532009e-08,
+      "z": -8.790796722198471e-08,
+      "roll": -0.17022527213392435,
+      "pitch": 0.21218167559465034,
+      "yaw": 0.11030874214475729
+    },
+    "settles_at": {
+      "x": -0.0022566759096144945,
+      "y": 0.004676907719259644,
+      "z": -0.0041118216312081846,
+      "roll": -0.002587479120716911,
+      "pitch": 0.48550439313145033,
+      "yaw": -0.06792037583330204
+    },
+    "note": "The head droops under its weight and has 2 to 3 degrees of play: 'command' is what is sent, 'settles_at' is where it really is in the reference view. Set it once and do not move it during recording and the demo. keys_reachy.py lock leaves it alone while it is still there, and after a restart brings it back to within about 2 to 3 degrees. Angles in radians, positions in metres."
+  },
+  "camera": {
+    "name": "Reachy Mini Camera (UVC)",
+    "config_file": "scripts/keys_cameras_midi.json",
+    "front": {
+      "type": "opencv_scaled",
+      "index_or_path": 0,
+      "width": 640,
+      "height": 360,
+      "fps": 30,
+      "capture_width": 1920,
+      "capture_height": 1080,
+      "capture_fps": 60
+    },
+    "ears": {
+      "type": "spectrogram",
+      "device": "BlackHole 2ch",
+      "width": 128,
+      "height": 128,
+      "fps": 30,
+      "window_s": 3.0
+    }
+  },
+  "reference_images": {
+    "policy_view": "rig/view_policy.jpg",
+    "full": "rig/view_full.jpg"
+  },
+  "check": "Before recording or a demo: compare Reachy's view with rig/view_policy.jpg (keys_camera_serve.py serves it at http://127.0.0.1:8790/policy.jpg). Do not run keys_ui.py or keys_voice.py during recording: they move the head."
+}
